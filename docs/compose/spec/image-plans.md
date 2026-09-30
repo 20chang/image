@@ -3,7 +3,7 @@ feature: image-plans
 status: delivered
 updated: 2026-09-30
 branch: master
-commits: # implementation reviewed as uncommitted working tree on master (base c6f2adb)
+commits: c6f2adb..3825358
 ---
 
 # 商品图片方案（Day-1 后端）

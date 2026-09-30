@@ -1,4 +1,4 @@
-"""SQLite persistence for folders, products, and reference images."""
+"""SQLite persistence for folders, products, reference images, and image plans."""
 
 from __future__ import annotations
 
@@ -40,8 +40,24 @@ CREATE TABLE IF NOT EXISTS ref_images (
     sort_order INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS image_plans (
+    id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    image_usage TEXT NOT NULL DEFAULT '商品主图',
+    ref_image_ids TEXT NOT NULL DEFAULT '[]',
+    drawing_request TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    based_on_plan_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    confirmed_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_folder ON products(folder_id);
 CREATE INDEX IF NOT EXISTS idx_refs_product ON ref_images(product_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_image_plans_product ON image_plans(product_id, created_at);
 """
 
 
@@ -72,7 +88,12 @@ def _seed_if_empty(conn) -> None:
             (fid, name, ts),
         )
     products = [
-        (folders[0][0], "摩托车高亮辅助灯", "北美", "12V 电压，防水等级 IP67，铝合金外壳。"),
+        (
+            folders[0][0],
+            "摩托车高亮辅助灯",
+            "北美",
+            "12V 电压，防水等级 IP67，铝合金外壳。",
+        ),
         (folders[1][0], "USB-C 10合1扩展坞", "欧洲", "支持 4K@60Hz，PD 100W 充电。"),
         (folders[2][0], "汽车内饰清洁软胶", "东南亚", "无毒环保材料，不留残胶。"),
     ]

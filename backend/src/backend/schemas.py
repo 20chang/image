@@ -68,3 +68,35 @@ class ReferenceOut(BaseModel):
     desc: str
     status: str
     sortOrder: int = 0
+
+
+class ImagePlanCreate(BaseModel):
+    name: str = Field(min_length=1)
+    imageUsage: str = "商品主图"
+    refImageIds: list[str] = Field(default_factory=list)
+    drawingRequest: str = ""
+    prompt: str = ""
+    basedOnPlanId: str | None = None
+
+
+class ImagePlanUpdate(BaseModel):
+    name: str | None = None
+    imageUsage: str | None = None
+    refImageIds: list[str] | None = None
+    drawingRequest: str | None = None
+    prompt: str | None = None
+
+
+class ImagePlanOut(BaseModel):
+    id: str
+    productId: str
+    name: str
+    imageUsage: str
+    refImageIds: list[str]
+    drawingRequest: str
+    prompt: str
+    status: str
+    basedOnPlanId: str | None = None
+    createdAt: str
+    updatedAt: str
+    confirmedAt: str | None = None

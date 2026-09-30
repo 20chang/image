@@ -12,6 +12,9 @@ from .schemas import (
     FolderCreate,
     FolderOut,
     FolderUpdate,
+    ImagePlanCreate,
+    ImagePlanOut,
+    ImagePlanUpdate,
     ProductCreate,
     ProductMove,
     ProductOut,
@@ -67,6 +70,32 @@ def _ref_row_to_out(row) -> ReferenceOut:
     )
 
 
+def _plan_row_to_out(row) -> ImagePlanOut:
+    return ImagePlanOut(
+        id=row["id"],
+        productId=row["product_id"],
+        name=row["name"],
+        imageUsage=row["image_usage"],
+        refImageIds=json.loads(row["ref_image_ids"] or "[]"),
+        drawingRequest=row["drawing_request"],
+        prompt=row["prompt"],
+        status=row["status"],
+        basedOnPlanId=row["based_on_plan_id"],
+        createdAt=row["created_at"],
+        updatedAt=row["updated_at"],
+        confirmedAt=row["confirmed_at"],
+    )
+
+
+def _require_plan_ref_ids(conn, product_id: str, ref_image_ids: list[str]) -> None:
+    for rid in ref_image_ids:
+        row = conn.execute(
+            "SELECT product_id FROM ref_images WHERE id = ?", (rid,)
+        ).fetchone()
+        if not row or row["product_id"] != product_id:
+            raise HTTPException(422, f"reference image not in product: {rid}")
+
+
 def _product_stats(conn, product_id: str) -> tuple[int, str | None]:
     rows = conn.execute(
         "SELECT url, status FROM ref_images WHERE product_id = ? ORDER BY sort_order",
@@ -112,9 +141,7 @@ def list_folders() -> list[FolderOut]:
 @router.get("/folders/{folder_id}", response_model=FolderOut)
 def get_folder(folder_id: str = PathParam()) -> FolderOut:
     with connect() as conn:
-        f = conn.execute(
-            "SELECT * FROM folders WHERE id = ?", (folder_id,)
-        ).fetchone()
+        f = conn.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)).fetchone()
         if not f:
             raise HTTPException(404, "folder not found")
         pcount, rcount = _folder_counts(conn, folder_id)
@@ -127,9 +154,7 @@ def create_folder(body: FolderCreate) -> FolderOut:
     if not name:
         raise HTTPException(422, "folder name required")
     with connect() as conn:
-        dup = conn.execute(
-            "SELECT id FROM folders WHERE name = ?", (name,)
-        ).fetchone()
+        dup = conn.execute("SELECT id FROM folders WHERE name = ?", (name,)).fetchone()
         if dup:
             raise HTTPException(409, "folder name already exists")
         fid = _new_id("f")
@@ -137,9 +162,7 @@ def create_folder(body: FolderCreate) -> FolderOut:
             "INSERT INTO folders (id, name, created_at) VALUES (?, ?, ?)",
             (fid, name, now_iso()),
         )
-        row = conn.execute(
-            "SELECT * FROM folders WHERE id = ?", (fid,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM folders WHERE id = ?", (fid,)).fetchone()
         return _folder_row_to_out(row, 0, 0)
 
 
@@ -149,9 +172,7 @@ def rename_folder(body: FolderUpdate, folder_id: str = PathParam()) -> FolderOut
     if not name:
         raise HTTPException(422, "folder name required")
     with connect() as conn:
-        f = conn.execute(
-            "SELECT * FROM folders WHERE id = ?", (folder_id,)
-        ).fetchone()
+        f = conn.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)).fetchone()
         if not f:
             raise HTTPException(404, "folder not found")
         dup = conn.execute(
@@ -160,9 +181,7 @@ def rename_folder(body: FolderUpdate, folder_id: str = PathParam()) -> FolderOut
         ).fetchone()
         if dup:
             raise HTTPException(409, "folder name already exists")
-        conn.execute(
-            "UPDATE folders SET name = ? WHERE id = ?", (name, folder_id)
-        )
+        conn.execute("UPDATE folders SET name = ? WHERE id = ?", (name, folder_id))
         row = conn.execute(
             "SELECT * FROM folders WHERE id = ?", (folder_id,)
         ).fetchone()
@@ -173,9 +192,7 @@ def rename_folder(body: FolderUpdate, folder_id: str = PathParam()) -> FolderOut
 @router.delete("/folders/{folder_id}", status_code=204)
 def delete_folder(folder_id: str = PathParam()) -> None:
     with connect() as conn:
-        f = conn.execute(
-            "SELECT id FROM folders WHERE id = ?", (folder_id,)
-        ).fetchone()
+        f = conn.execute("SELECT id FROM folders WHERE id = ?", (folder_id,)).fetchone()
         if not f:
             raise HTTPException(404, "folder not found")
         count = conn.execute(
@@ -253,16 +270,12 @@ def create_product(body: ProductCreate) -> ProductOut:
                 now_iso(),
             ),
         )
-        r = conn.execute(
-            "SELECT * FROM products WHERE id = ?", (pid,)
-        ).fetchone()
+        r = conn.execute("SELECT * FROM products WHERE id = ?", (pid,)).fetchone()
         return _product_row_to_out(r, 0, None)
 
 
 @router.patch("/products/{product_id}", response_model=ProductOut)
-def update_product(
-    body: ProductUpdate, product_id: str = PathParam()
-) -> ProductOut:
+def update_product(body: ProductUpdate, product_id: str = PathParam()) -> ProductOut:
     with connect() as conn:
         r = conn.execute(
             "SELECT * FROM products WHERE id = ?", (product_id,)
@@ -335,9 +348,7 @@ def delete_product(product_id: str = PathParam()) -> None:
 # --- Reference images ---
 
 
-@router.get(
-    "/products/{product_id}/references", response_model=list[ReferenceOut]
-)
+@router.get("/products/{product_id}/references", response_model=list[ReferenceOut])
 def list_references(product_id: str = PathParam()) -> list[ReferenceOut]:
     with connect() as conn:
         r = conn.execute(
@@ -396,9 +407,7 @@ async def upload_reference(
             """,
             (rid, f"asset_{rid}", product_id, url, max_order + 1),
         )
-        row = conn.execute(
-            "SELECT * FROM ref_images WHERE id = ?", (rid,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM ref_images WHERE id = ?", (rid,)).fetchone()
         return _ref_row_to_out(row)
 
 
@@ -479,3 +488,164 @@ def delete_reference(ref_id: str = PathParam()) -> None:
         if not row:
             raise HTTPException(404, "reference not found")
         conn.execute("DELETE FROM ref_images WHERE id = ?", (ref_id,))
+
+
+# --- Image plans ---
+
+
+@router.get("/products/{product_id}/plans", response_model=list[ImagePlanOut])
+def list_image_plans(product_id: str = PathParam()) -> list[ImagePlanOut]:
+    with connect() as conn:
+        product = conn.execute(
+            "SELECT id FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if not product:
+            raise HTTPException(404, "product not found")
+        rows = conn.execute(
+            """
+            SELECT * FROM image_plans WHERE product_id = ?
+            ORDER BY created_at, id
+            """,
+            (product_id,),
+        ).fetchall()
+        return [_plan_row_to_out(r) for r in rows]
+
+
+@router.get("/plans/{plan_id}", response_model=ImagePlanOut)
+def get_image_plan(plan_id: str = PathParam()) -> ImagePlanOut:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "plan not found")
+        return _plan_row_to_out(row)
+
+
+@router.post(
+    "/products/{product_id}/plans",
+    response_model=ImagePlanOut,
+    status_code=201,
+)
+def create_image_plan(
+    body: ImagePlanCreate, product_id: str = PathParam()
+) -> ImagePlanOut:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "plan name required")
+    with connect() as conn:
+        product = conn.execute(
+            "SELECT id FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if not product:
+            raise HTTPException(404, "product not found")
+        _require_plan_ref_ids(conn, product_id, body.refImageIds)
+        if body.basedOnPlanId is not None:
+            src = conn.execute(
+                "SELECT product_id FROM image_plans WHERE id = ?",
+                (body.basedOnPlanId,),
+            ).fetchone()
+            if not src or src["product_id"] != product_id:
+                raise HTTPException(422, "basedOnPlanId must be a plan of this product")
+        plan_id = _new_id("pl")
+        ts = now_iso()
+        conn.execute(
+            """
+            INSERT INTO image_plans (
+                id, product_id, name, image_usage, ref_image_ids,
+                drawing_request, prompt, status, based_on_plan_id,
+                created_at, updated_at, confirmed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL)
+            """,
+            (
+                plan_id,
+                product_id,
+                name,
+                body.imageUsage,
+                json.dumps(body.refImageIds, ensure_ascii=False),
+                body.drawingRequest,
+                body.prompt,
+                body.basedOnPlanId,
+                ts,
+                ts,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        return _plan_row_to_out(row)
+
+
+@router.patch("/plans/{plan_id}", response_model=ImagePlanOut)
+def update_image_plan(
+    body: ImagePlanUpdate, plan_id: str = PathParam()
+) -> ImagePlanOut:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "plan not found")
+        if row["status"] != "draft":
+            raise HTTPException(409, "confirmed plan is immutable")
+        name = row["name"] if body.name is None else body.name.strip()
+        if not name:
+            raise HTTPException(422, "plan name required")
+        image_usage = row["image_usage"] if body.imageUsage is None else body.imageUsage
+        if body.refImageIds is None:
+            ref_image_ids = json.loads(row["ref_image_ids"] or "[]")
+        else:
+            ref_image_ids = body.refImageIds
+            _require_plan_ref_ids(conn, row["product_id"], ref_image_ids)
+        drawing_request = (
+            row["drawing_request"]
+            if body.drawingRequest is None
+            else body.drawingRequest
+        )
+        prompt = row["prompt"] if body.prompt is None else body.prompt
+        conn.execute(
+            """
+            UPDATE image_plans
+            SET name = ?, image_usage = ?, ref_image_ids = ?,
+                drawing_request = ?, prompt = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                image_usage,
+                json.dumps(ref_image_ids, ensure_ascii=False),
+                drawing_request,
+                prompt,
+                now_iso(),
+                plan_id,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        return _plan_row_to_out(row)
+
+
+@router.post("/plans/{plan_id}/confirm", response_model=ImagePlanOut)
+def confirm_image_plan(plan_id: str = PathParam()) -> ImagePlanOut:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "plan not found")
+        if row["status"] != "draft":
+            raise HTTPException(409, "plan already confirmed")
+        ts = now_iso()
+        conn.execute(
+            """
+            UPDATE image_plans
+            SET status = 'confirmed', confirmed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (ts, ts, plan_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        return _plan_row_to_out(row)

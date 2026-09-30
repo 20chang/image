@@ -60,13 +60,36 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     print("=" * 60)
-    print("3. 组装后的模型请求 (messages)")
+    print("3. 图片输入清单（文本路径，非已解析图片）")
+    print("=" * 60)
+    for img in result["image_inputs"]:
+        print(
+            f"  {img['label']}（{img['refImageId']}）"
+            f" | {img['url'] or '—'}"
+            f" | {img['status']}"
+        )
+
+    print()
+    print("=" * 60)
+    print("4. 组装状态")
+    print("=" * 60)
+    status = result["assembly_status"]
+    print(f"  规则已加载: {status['rules_loaded']}")
+    print(f"  请求已组装: {status['request_assembled']}")
+    print(f"  图片已解析: {status['images_resolved']}")
+    print(f"  模型已调用: {status['model_called']}")
+    print(f"  图片已生成: {status['image_generated']}")
+    print(f"  说明: {status['note']}")
+
+    print()
+    print("=" * 60)
+    print("5. 组装后的模型请求 (messages)")
     print("=" * 60)
     print(json.dumps(result["model_request"], ensure_ascii=False, indent=2))
 
     print()
     print("=" * 60)
-    print("4. 与方案字段的映射说明")
+    print("6. 与方案字段的映射说明")
     print("=" * 60)
     for src, dst in result["field_mapping"].items():
         print(f"  {src}  →  {dst}")

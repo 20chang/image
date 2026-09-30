@@ -32,6 +32,15 @@ def _ref_label(index: int) -> str:
     return chr(ord("A") + index)
 
 
+def _image_status(url: str) -> str:
+    """测试占位与真实图片路径的展示状态。"""
+    if not url:
+        return "未提供地址"
+    if url.startswith(("/static/fixtures/", "fixture:")):
+        return "测试占位（未提供真实图片）"
+    return "已提供地址（图片内容待解析）"
+
+
 def _ref_map(case: dict[str, Any]) -> list[dict[str, Any]]:
     """按 referenceUsage 顺序建立 A/B/C ↔ refImageId 对照。"""
     refs_by_id: dict[str, dict[str, Any]] = {}
@@ -48,10 +57,13 @@ def _ref_map(case: dict[str, Any]) -> list[dict[str, Any]]:
             raise SkillPreviewError(
                 f"referenceUsage 引用了不存在的 refImageId: {ref_id!r}"
             )
+        url = ref.get("url") or ""
         rows.append(
             {
                 "label": _ref_label(idx),
                 "refImageId": ref_id,
+                "url": url,
+                "imageStatus": _image_status(url),
                 "roles": item.get("roles") or [],
                 "useFor": item.get("useFor") or "",
                 "ignore": item.get("ignore") or "",
@@ -61,6 +73,36 @@ def _ref_map(case: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def _usage_line(row: dict[str, Any]) -> str:
+    roles = (
+        "、".join(ROLE_LABELS.get(str(r), str(r)) for r in row["roles"]) or "（无角色）"
+    )
+    desc = row["desc"] or "—"
+    return (
+        f"{row['label']}（{row['refImageId']}）"
+        f"；角色：{roles}"
+        f"；使用「{row['useFor'] or '—'}」"
+        f"；忽略「{row['ignore'] or '—'}」"
+        f"；备注：{desc}"
+        f"；{RELATION_LABELS.get(row['productRelation'], row['productRelation'])}"
+        f" / {AI_LABELS.get(row['aiStatus'], row['aiStatus'])}"
+    )
+
+
+def _image_line(row: dict[str, Any]) -> str:
+    roles = (
+        "、".join(ROLE_LABELS.get(str(r), str(r)) for r in row["roles"]) or "（无角色）"
+    )
+    return (
+        f"{row['label']}（{row['refImageId']}）"
+        f"；来源：{row['url'] or '—'}"
+        f"；状态：{row['imageStatus']}"
+        f"；角色：{roles}"
+        f"；使用「{row['useFor'] or '—'}」"
+        f"；忽略「{row['ignore'] or '—'}」"
+    )
 
 
 def assemble_request(family: str, case_path: str) -> dict[str, Any]:
@@ -81,20 +123,9 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
     system_parts.append(rules["family_doc"][1])
     system_prompt = "\n\n---\n\n".join(system_parts)
 
-    usage_lines = []
-    for row in ref_rows:
-        roles = (
-            "、".join(ROLE_LABELS.get(str(r), str(r)) for r in row["roles"])
-            or "（无角色）"
-        )
-        line = (
-            f"{row['label']}（{row['refImageId']}）: {roles}"
-            f"；使用「{row['useFor'] or '—'}」"
-            f"；忽略「{row['ignore'] or '—'}」"
-            f"；{RELATION_LABELS.get(row['productRelation'], row['productRelation'])}"
-            f" / {AI_LABELS.get(row['aiStatus'], row['aiStatus'])}"
-        )
-        usage_lines.append(line)
+    # 文字说明与图片输入都按 referenceUsage 顺序（=使用顺序）
+    usage_lines = [_usage_line(row) for row in ref_rows]
+    image_lines = [_image_line(row) for row in ref_rows]
 
     user_prompt = (
         f"## 商品资料\n"
@@ -105,9 +136,16 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
         f"- 名称：{plan.get('name', '')}\n"
         f"- 用途：{plan.get('imageUsage', '')}\n"
         f"- 用户制图要求（原文保留）：{plan.get('drawingRequest', '')}\n\n"
-        f"## 参考图与使用范围（顺序=使用顺序）\n"
+        f"## 参考图文字说明（顺序=使用顺序）\n"
         + "\n".join(f"- {line}" for line in usage_lines)
-        + "\n\n请输出：设计说明、参考图使用安排、生图提示词、待确认问题。"
+        + "\n\n## 参考图图片输入（顺序=使用顺序，与上表一一对应）\n"
+        + "\n".join(f"- {line}" for line in image_lines)
+        + "\n\n## 组装状态\n"
+        "- 已组装：规则文本、商品资料、方案字段、参考图文字说明与图片输入清单。\n"
+        "- 待适配：图片像素内容尚未解析（当前无模型提供者）；上表「来源」是路径文本，"
+        "不代表模型已收到图片。\n"
+        "- 未执行：模型调用、图片生成。\n\n"
+        "请输出：设计说明、参考图使用安排、生图提示词、待确认问题。"
     )
 
     model_request = {
@@ -118,6 +156,19 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
         ],
     }
 
+    image_inputs = [
+        {
+            "label": r["label"],
+            "refImageId": r["refImageId"],
+            "url": r["url"],
+            "status": r["imageStatus"],
+            "roles": r["roles"],
+            "useFor": r["useFor"],
+            "ignore": r["ignore"],
+        }
+        for r in ref_rows
+    ]
+
     return {
         "family": family,
         "loaded_rules": rules["loaded_paths"],
@@ -125,13 +176,24 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
             {"label": r["label"], "refImageId": r["refImageId"]} for r in ref_rows
         ],
         "ref_detail": ref_rows,
+        "image_inputs": image_inputs,
         "model_request": model_request,
+        "assembly_status": {
+            "rules_loaded": True,
+            "request_assembled": True,
+            "images_resolved": False,
+            "model_called": False,
+            "image_generated": False,
+            "note": "图片路径为文本清单，像素内容待模型提供者适配后解析。",
+        },
         "field_mapping": {
             "product.name/market/facts": "user_prompt §商品资料",
             "plan.name/imageUsage": "user_prompt §方案",
             "plan.drawingRequest": "user_prompt §方案（原文保留）",
-            "referenceUsage[]": "user_prompt §参考图与使用范围",
-            "参考图身份 refImageId": "ref_order / ref_detail，顺序一致",
+            "referenceUsage[]": "user_prompt §参考图文字说明 + §参考图图片输入",
+            "ReferenceOut.desc": "user_prompt §参考图文字说明（备注）",
+            "ReferenceOut.url": "user_prompt §参考图图片输入（来源）",
+            "参考图身份 refImageId": "ref_order / image_inputs，顺序一致",
             "designNotes": "建议输出，本轮不入库",
             "usageSummary / prompt": "已有 image_plans 列",
             "openQuestions": "建议输出，本轮不入库",
@@ -139,5 +201,6 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
         "gaps": [
             "designNotes 尚未写入 image_plans",
             "openQuestions 尚未写入 image_plans",
+            "图片像素内容尚未解析（无模型提供者）",
         ],
     }

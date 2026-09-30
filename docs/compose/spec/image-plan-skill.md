@@ -3,14 +3,20 @@ feature: image-plan-skill
 status: delivered
 updated: 2026-09-30
 branch: feat/image-plan-skill
-commits: 65a0dff..6fac55b
+commits: 65a0dff..48a52e0 + amendment
 ---
 
 # 图片方案 Skill 第一轮（结构 + main 样板 + 请求预览）
 
 ## Report
 
-**What was built** — 建立 `skills/` 规则体系：`common/` 通用流程与 IO 契约（读商品事实 → 理解参考图与使用范围 → 处理资料冲突 → 组织方案与提示词；字段映射含 `designNotes`/`openQuestions` 缺口记录），六族文件统一六节（main 完整实现，wear/handheld/scene/texture/compare 标注边界与待实现）。main 族配车灯案例：`car-light-main.case.json`（TEST FIXTURE）+ `car-light-main.sample.md`（人工编写）。新增 `backend.skill_preview` CLI，组装 system+user messages 并打印规则加载列表、A/B/C ↔ refImageId 对照、字段映射；不调用模型。
+**What was built** — 建立 `skills/` 规则体系：`common/` 通用流程与 IO 契约（读商品事实 → 理解参考图与使用范围 → 处理资料冲突 → 组织方案与提示词；字段映射含 `designNotes`/`openQuestions` 缺口记录），六族文件统一六节（main 完整实现，wear/handheld/scene/texture/compare 标注边界与待实现）。main 族配车灯案例：`car-light-main.case.json`（TEST FIXTURE）+ `car-light-main.sample.md`（人工编写、尚未模型实测）。新增 `backend.skill_preview` CLI，组装 system+user messages 并打印规则加载列表、A/B/C ↔ refImageId 对照、图片输入清单、组装状态、字段映射；不调用模型。
+
+**Amendment（验收返修）** — 针对 GPT 验收三个问题：
+
+1. **参考图输入补齐**：`desc` 与 `url` 进入 user_prompt；新增「参考图图片输入」段（refImageId、标签、来源、角色、采纳/忽略）；文字与图片均按 `referenceUsage` 排序；占位 URL 标注「测试占位（未提供真实图片）」；「组装状态」明确区分 规则已加载 / 请求已组装 / 图片已解析 / 模型已调用 / 图片已生成（本轮仅前两项为 True）。
+2. **主图样板依据收紧**：删除无依据的「透明灯罩」「黑色接头」；提示词显式标注 ref-A 保留整体外观、ref-B 仅补接口、ref-C 仅构图并忽略商品文字 Logo；依据边界写明「设计可发挥、结构必须有依据」。
+3. **校验与回归测试**：`validate_case` 复用 `PLAN_ROLES` 与 primary≤1 等约束，拒绝重复 id/重复引用/不存在引用/非法角色/多 primary，类型错误指出字段位置；新增 `tests/test_skill_preview.py`（19 例）。
 
 **Verification** — 命令与结果：
 
@@ -24,20 +30,28 @@ commits: 65a0dff..6fac55b
     A  ↔  ref-A
     B  ↔  ref-B
     C  ↔  ref-C
-  3. 组装后的模型请求 (messages)  # system=通用+IO+main 规则，user=商品资料+方案+参考范围
-  4. 与方案字段的映射说明          # 含 [gap] designNotes / openQuestions
+  3. 图片输入清单（文本路径，非已解析图片）
+    A（ref-A） | /static/fixtures/car-light-full.jpg | 测试占位（未提供真实图片）
+    B（ref-B） | /static/fixtures/car-light-connector.jpg | 测试占位（未提供真实图片）
+    C（ref-C） | /static/fixtures/poster-other.jpg | 测试占位（未提供真实图片）
+  4. 组装状态
+    规则已加载: True
+    请求已组装: True
+    图片已解析: False
+    模型已调用: False
+    图片已生成: False
   ```
-- `--case missing.case.json` → `[error] case 文件不存在`，exit 1 — PASS
-- `--family wear`（case 为 main）→ family 不一致报错，exit 1 — PASS
-- `uv run ruff check src/` / `ruff format --check src/` — PASS
+- user_prompt 含「参考图文字说明」（含备注）与「参考图图片输入」（含来源），两段顺序与 `referenceUsage` 一致 — PASS
+- `uv run pytest tests/ -q` — PASS（33 passed，含 19 例 skill_preview）
+- `uv run ruff check src/ tests/` / `ruff format --check` — PASS
 - `uv run pyright src/` — PASS（0 errors）
-- `uv run pytest tests/ -q` — PASS（14 passed）
 
 **Journey log** —
-1. Review 指出 T5「留下输出摘录」未落在文档 — 本 Report 的 Verification 摘录即补齐；交付前务必把 dry_run 证据写进 spec。
-2. `loader.loaded_paths` 混用 `str`/`Path`、`references` 缺 `id` 抛裸 `KeyError` — review 后已修。
-3. `paste.txt` 为任务简报，保持 untracked，不入库。
-4. `designNotes`/`openQuestions` 本轮只文档化；下一轮入库时可直接按 IO 契约加列。
+1. Review 指出 T5「留下输出摘录」未落在文档 — 交付前务必把 dry_run 证据写进 spec Report。
+2. 验收反馈：改 desc/URL 请求不变 → 根因是 usage 行未带 desc、URL 完全未入 prompt；已拆成文字说明 + 图片输入两段。
+3. 验收反馈：样板写入「透明灯罩/黑色接头」→ 输入无据；规则改为「设计可发挥、结构必须有依据」，无据细节删除或待确认。
+4. `paste.txt` 为任务简报，保持 untracked，不入库。
+5. `designNotes`/`openQuestions` 本轮只文档化；下一轮入库时可直接按 IO 契约加列。
 
 ## [S1] Problem
 

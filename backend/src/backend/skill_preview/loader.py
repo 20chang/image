@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from backend.schemas import PLAN_ROLES
+from backend.schemas import AI_STATUSES, PLAN_ROLES, PRODUCT_RELATIONS
 
 # skills/ 在仓库根目录：backend/src/backend/skill_preview/loader.py → 上溯 4 层
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -77,6 +77,14 @@ def _require_list(value: Any, where: str) -> list[Any]:
     return value
 
 
+def _require_enum(value: Any, where: str, allowed: set[str]) -> str:
+    if not isinstance(value, str):
+        raise SkillPreviewError(f"{where} 必须是字符串，实际是 {type(value).__name__}")
+    if value not in allowed:
+        raise SkillPreviewError(f"{where} 非法取值: {value!r}，可选: {sorted(allowed)}")
+    return value
+
+
 def validate_case(data: dict[str, Any], *, source: str = "case") -> dict[str, Any]:
     """校验 case 结构与业务约束；错误消息带字段位置。"""
     for key in REQUIRED_CASE_KEYS:
@@ -104,6 +112,12 @@ def validate_case(data: dict[str, Any], *, source: str = "case") -> dict[str, An
             raise SkillPreviewError(f"{where}.id 重复: {rid!r}")
         _require_str(ref.get("url", ""), f"{where}.url")
         _require_str(ref.get("desc", ""), f"{where}.desc")
+        if "productRelation" in ref and ref["productRelation"] is not None:
+            _require_enum(
+                ref["productRelation"], f"{where}.productRelation", PRODUCT_RELATIONS
+            )
+        if "aiStatus" in ref and ref["aiStatus"] is not None:
+            _require_enum(ref["aiStatus"], f"{where}.aiStatus", AI_STATUSES)
         refs_by_id[rid] = ref
 
     usage_raw = _require_list(data["referenceUsage"], f"{source}.referenceUsage")
@@ -124,6 +138,10 @@ def validate_case(data: dict[str, Any], *, source: str = "case") -> dict[str, An
             )
         roles = _require_list(item.get("roles", []), f"{where}.roles")
         for j, role in enumerate(roles):
+            if not isinstance(role, str):
+                raise SkillPreviewError(
+                    f"{where}.roles[{j}] 必须是字符串，实际是 {type(role).__name__}"
+                )
             if role not in PLAN_ROLES:
                 raise SkillPreviewError(
                     f"{where}.roles[{j}] 非法角色: {role!r}，可选: {sorted(PLAN_ROLES)}"

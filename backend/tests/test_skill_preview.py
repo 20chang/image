@@ -143,7 +143,6 @@ def test_reorder_keeps_identity_and_content(tmp_path: Path) -> None:
     a_pos = user.index("A（ref-C）")
     c_pos = user.index("海报备注-丙")
     assert a_pos < c_pos
-    assert "https://" not in user[:a_pos] or True  # 文字段在前
     imgs = result["image_inputs"]
     assert imgs[0]["refImageId"] == "ref-C"
     assert imgs[0]["url"].endswith("c.jpg")
@@ -252,6 +251,49 @@ def test_roles_type_error_names_index() -> None:
         validate_case(data)
 
 
+def test_roles_non_string_element_rejected() -> None:
+    data = _base_case()
+    data["referenceUsage"][0]["roles"] = [{}]
+    with pytest.raises(
+        SkillPreviewError, match=r"referenceUsage\[0\]\.roles\[0\] 必须是字符串"
+    ):
+        validate_case(data)
+
+
+def test_product_relation_wrong_type_rejected() -> None:
+    data = _base_case()
+    data["references"][0]["productRelation"] = []
+    with pytest.raises(
+        SkillPreviewError, match=r"references\[0\]\.productRelation 必须是字符串"
+    ):
+        validate_case(data)
+
+
+def test_ai_status_wrong_type_rejected() -> None:
+    data = _base_case()
+    data["references"][0]["aiStatus"] = {}
+    with pytest.raises(
+        SkillPreviewError, match=r"references\[0\]\.aiStatus 必须是字符串"
+    ):
+        validate_case(data)
+
+
+def test_product_relation_illegal_enum_rejected() -> None:
+    data = _base_case()
+    data["references"][0]["productRelation"] = "same"
+    with pytest.raises(
+        SkillPreviewError, match=r"references\[0\]\.productRelation 非法取值"
+    ):
+        validate_case(data)
+
+
+def test_ai_status_illegal_enum_rejected() -> None:
+    data = _base_case()
+    data["references"][0]["aiStatus"] = "maybe"
+    with pytest.raises(SkillPreviewError, match=r"references\[0\]\.aiStatus 非法取值"):
+        validate_case(data)
+
+
 # ---------- CLI 非零退出 ----------
 
 
@@ -275,10 +317,12 @@ def test_cli_zero_on_good_case() -> None:
 
 
 def test_plan_roles_enums_match_schemas() -> None:
-    from backend.schemas import PLAN_ROLES
-    from backend.skill_preview.assemble import ROLE_LABELS
+    from backend.schemas import AI_STATUSES, PLAN_ROLES, PRODUCT_RELATIONS
+    from backend.skill_preview.assemble import AI_LABELS, RELATION_LABELS, ROLE_LABELS
 
     assert set(ROLE_LABELS) == set(PLAN_ROLES)
+    assert set(RELATION_LABELS) == set(PRODUCT_RELATIONS)
+    assert set(AI_LABELS) == set(AI_STATUSES)
 
 
 def test_load_case_reads_shipped_fixture() -> None:

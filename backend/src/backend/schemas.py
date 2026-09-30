@@ -9,6 +9,8 @@ AiStatus = Literal["yes", "no", "unknown"]
 PlanRole = Literal["primary", "detail", "usage", "composition", "style"]
 
 PLAN_ROLES: set[str] = {"primary", "detail", "usage", "composition", "style"}
+PRODUCT_RELATIONS: set[str] = {"same_product", "other_product", "no_product", "unknown"}
+AI_STATUSES: set[str] = {"yes", "no", "unknown"}
 
 
 class FolderCreate(BaseModel):

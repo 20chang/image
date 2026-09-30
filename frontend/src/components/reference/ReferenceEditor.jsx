@@ -1,6 +1,9 @@
 import { AlertCircle, CheckCircle2, Trash2, X } from 'lucide-react'
 import Button from '../ui/Button.jsx'
-import { SOURCE_OPTIONS, PURPOSE_OPTIONS } from '../../data/constants.js'
+import {
+  AI_STATUS_OPTIONS,
+  PRODUCT_RELATION_OPTIONS,
+} from '../../data/constants.js'
 
 export default function ReferenceEditor({
   draft,
@@ -39,55 +42,44 @@ export default function ReferenceEditor({
           <p className="text-[12.5px] leading-relaxed text-[var(--text-3)]">
             在左侧选择一张参考图
             <br />
-            即可编辑来源、用途和说明
+            即可编辑与商品的关系、AI 状态和备注
           </p>
         </div>
       </>
     )
   }
 
-  const incomplete = !draft.source || draft.purposes?.length === 0
+  const relation = draft.productRelation || 'unknown'
+  const aiStatus = draft.aiStatus || 'unknown'
 
   return (
     <>
       {header}
 
       <div className="flex-1 overflow-y-auto p-4">
-        {incomplete && (
-          <div className="mb-4 flex items-start gap-2 rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--warning)_25%,transparent)] bg-[var(--warning-soft)] p-2.5">
-            <AlertCircle
-              className="mt-0.5 w-3.5 h-3.5 shrink-0 text-[var(--warning)]"
-              aria-hidden="true"
-            />
-            <p className="m-0 text-[11.5px] leading-relaxed text-[var(--warning)]">
-              资料不完整。来源明确并勾选用途的图片，才会用于后续生成。
-            </p>
-          </div>
-        )}
-
         <fieldset className="mb-5 border-0 p-0 m-0">
           <legend className="mb-1 text-[12.5px] font-semibold text-[var(--text-1)]">
-            来源
+            与当前商品的关系
           </legend>
           <p className="mb-2.5 text-[11px] text-[var(--text-3)]">
-            这张图来自哪里、能否作为商品事实依据？
+            这张图和当前商品是什么关系？允许「不确定」。
           </p>
           <div className="space-y-1.5">
-            {SOURCE_OPTIONS.map((opt) => (
+            {PRODUCT_RELATION_OPTIONS.map((opt) => (
               <label
                 key={opt.value}
                 className={`flex cursor-pointer items-center rounded-[var(--radius-sm)] border px-2.5 py-2 transition-colors ${
-                  draft.source === opt.value
+                  relation === opt.value
                     ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
                     : 'border-[var(--border-whisper)] hover:bg-[var(--bg-hover)]'
                 }`}
               >
                 <input
                   type="radio"
-                  name="source"
+                  name="productRelation"
                   value={opt.value}
-                  checked={draft.source === opt.value}
-                  onChange={() => onChange({ ...draft, source: opt.value })}
+                  checked={relation === opt.value}
+                  onChange={() => onChange({ ...draft, productRelation: opt.value })}
                   className="accent-[var(--accent)]"
                 />
                 <span className="ml-2.5 text-[12.5px] font-medium text-[var(--text-1)]">
@@ -100,38 +92,34 @@ export default function ReferenceEditor({
 
         <fieldset className="mb-5 border-0 p-0 m-0">
           <legend className="mb-1 text-[12.5px] font-semibold text-[var(--text-1)]">
-            用途
+            是否经过 AI 处理
           </legend>
           <p className="mb-2.5 text-[11px] text-[var(--text-3)]">
-            希望参考图里的哪些内容？可多选。
+            是否经 AI 生成或修改？与「关系」相互独立。
           </p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {PURPOSE_OPTIONS.map((opt) => {
-              const checked = draft.purposes?.includes(opt.value)
-              return (
-                <label
-                  key={opt.value}
-                  className={`flex cursor-pointer items-center rounded-[var(--radius-sm)] border px-2 py-2 text-[12px] transition-colors ${
-                    checked
-                      ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-text)] font-medium'
-                      : 'border-[var(--border-whisper)] text-[var(--text-2)] hover:bg-[var(--bg-hover)]'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => {
-                      const next = e.target.checked
-                        ? [...(draft.purposes || []), opt.value]
-                        : (draft.purposes || []).filter((p) => p !== opt.value)
-                      onChange({ ...draft, purposes: next })
-                    }}
-                    className="accent-[var(--accent)]"
-                  />
-                  <span className="ml-1.5">{opt.label}</span>
-                </label>
-              )
-            })}
+          <div className="space-y-1.5">
+            {AI_STATUS_OPTIONS.map((opt) => (
+              <label
+                key={opt.value}
+                className={`flex cursor-pointer items-center rounded-[var(--radius-sm)] border px-2.5 py-2 transition-colors ${
+                  aiStatus === opt.value
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                    : 'border-[var(--border-whisper)] hover:bg-[var(--bg-hover)]'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="aiStatus"
+                  value={opt.value}
+                  checked={aiStatus === opt.value}
+                  onChange={() => onChange({ ...draft, aiStatus: opt.value })}
+                  className="accent-[var(--accent)]"
+                />
+                <span className="ml-2.5 text-[12.5px] font-medium text-[var(--text-1)]">
+                  {opt.label}
+                </span>
+              </label>
+            ))}
           </div>
         </fieldset>
 
@@ -140,7 +128,7 @@ export default function ReferenceEditor({
             className="mb-1 block text-[12.5px] font-semibold text-[var(--text-1)]"
             htmlFor="ref-desc"
           >
-            说明
+            备注
           </label>
           <textarea
             id="ref-desc"
@@ -150,7 +138,7 @@ export default function ReferenceEditor({
             onChange={(e) => onChange({ ...draft, desc: e.target.value })}
           />
           <p className="mt-1.5 text-[11px] text-[var(--text-3)]">
-            说明填 <code>error</code> 并保存可模拟失败。
+            备注填 <code>error</code> 并保存可模拟失败。
           </p>
           {saveError && (
             <p role="alert" className="field-error">
@@ -169,7 +157,7 @@ export default function ReferenceEditor({
             从本商品移除
           </button>
           <p className="mt-1 text-[11px] text-[var(--text-3)]">
-            只解除关联，不会删除全部历史记录。
+            被图片方案引用时无法删除。只解除关联，不会删除全部历史记录。
           </p>
         </div>
       </div>

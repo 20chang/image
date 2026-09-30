@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+ProductRelation = Literal["same_product", "other_product", "no_product", "unknown"]
+AiStatus = Literal["yes", "no", "unknown"]
+PlanRole = Literal["primary", "detail", "usage", "composition", "style"]
+
+PLAN_ROLES: set[str] = {"primary", "detail", "usage", "composition", "style"}
 
 
 class FolderCreate(BaseModel):
@@ -49,9 +57,11 @@ class ProductOut(BaseModel):
 
 
 class ReferenceMeta(BaseModel):
-    source: str = ""
-    purposes: list[str] = Field(default_factory=list)
-    desc: str = ""
+    source: str | None = None
+    purposes: list[str] | None = None
+    desc: str | None = None
+    productRelation: ProductRelation | None = None
+    aiStatus: AiStatus | None = None
 
 
 class ReferenceReorder(BaseModel):
@@ -68,6 +78,15 @@ class ReferenceOut(BaseModel):
     desc: str
     status: str
     sortOrder: int = 0
+    productRelation: ProductRelation = "unknown"
+    aiStatus: AiStatus = "unknown"
+
+
+class ReferenceUsageItem(BaseModel):
+    refImageId: str = Field(min_length=1)
+    roles: list[str] = Field(default_factory=list)
+    useFor: str = ""
+    ignore: str = ""
 
 
 class ImagePlanCreate(BaseModel):
@@ -77,6 +96,7 @@ class ImagePlanCreate(BaseModel):
     drawingRequest: str = ""
     prompt: str = ""
     basedOnPlanId: str | None = None
+    referenceUsage: list[ReferenceUsageItem] | None = None
 
 
 class ImagePlanUpdate(BaseModel):
@@ -85,6 +105,7 @@ class ImagePlanUpdate(BaseModel):
     refImageIds: list[str] | None = None
     drawingRequest: str | None = None
     prompt: str | None = None
+    referenceUsage: list[ReferenceUsageItem] | None = None
 
 
 class ImagePlanOut(BaseModel):
@@ -100,3 +121,5 @@ class ImagePlanOut(BaseModel):
     createdAt: str
     updatedAt: str
     confirmedAt: str | None = None
+    referenceUsage: list[ReferenceUsageItem] = Field(default_factory=list)
+    usageSummary: str = ""

@@ -119,6 +119,8 @@ export async function markReferenceStatus(productId, refId, status) {
       source: current.source,
       purposes: current.purposes,
       desc: current.desc,
+      productRelation: current.productRelation,
+      aiStatus: current.aiStatus,
     },
   })
 }
@@ -130,6 +132,8 @@ export async function saveReferenceMeta(productId, refId, meta) {
       source: meta.source ?? '',
       purposes: meta.purposes ?? [],
       desc: meta.desc ?? '',
+      productRelation: meta.productRelation,
+      aiStatus: meta.aiStatus,
     },
   })
 }
@@ -143,4 +147,26 @@ export async function reorderReferences(productId, refId, direction) {
 
 export async function removeReference(productId, refId) {
   return request(`/references/${refId}`, { method: 'DELETE' })
+}
+
+// --- Image plans ---
+
+export async function listPlans(productId) {
+  return request(`/products/${productId}/plans`)
+}
+
+export async function getPlan(planId) {
+  return request(`/plans/${planId}`)
+}
+
+export async function createPlan(productId, body) {
+  return request(`/products/${productId}/plans`, { method: 'POST', body })
+}
+
+export async function updatePlan(planId, patch) {
+  return request(`/plans/${planId}`, { method: 'PATCH', body: patch })
+}
+
+export async function confirmPlan(planId) {
+  return request(`/plans/${planId}/confirm`, { method: 'POST' })
 }

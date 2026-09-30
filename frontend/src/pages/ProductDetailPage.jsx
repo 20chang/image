@@ -19,6 +19,7 @@ import MoveProductDialog from '../components/folder/MoveProductDialog.jsx'
 import ReferenceCard from '../components/reference/ReferenceCard.jsx'
 import ReferenceEditor from '../components/reference/ReferenceEditor.jsx'
 import ImagePreview from '../components/reference/ImagePreview.jsx'
+import ImagePlansPanel from '../components/plan/ImagePlansPanel.jsx'
 import { TAB_IDS } from '../data/constants.js'
 import * as api from '../services/productService.js'
 
@@ -108,10 +109,9 @@ export default function ProductDetailPage() {
   const dirty = Boolean(
     draft &&
       draftBase &&
-      (draft.source !== draftBase.source ||
-        draft.desc !== draftBase.desc ||
-        JSON.stringify([...(draft.purposes || [])].sort()) !==
-          JSON.stringify([...(draftBase.purposes || [])].sort())),
+      (draft.productRelation !== draftBase.productRelation ||
+        draft.aiStatus !== draftBase.aiStatus ||
+        draft.desc !== draftBase.desc),
   )
 
   const guard = (action) => {
@@ -190,9 +190,14 @@ export default function ProductDetailPage() {
   }
 
   const handleRemove = async (refId) => {
-    await api.removeReference(productId, refId)
-    if (selectedId === refId) setSelectedId(null)
-    setReferences(await api.listReferences(productId))
+    try {
+      await api.removeReference(productId, refId)
+      if (selectedId === refId) setSelectedId(null)
+      setReferences(await api.listReferences(productId))
+      setSaveError('')
+    } catch (e) {
+      setSaveError(e.message || '删除失败，图片可能仍被方案引用')
+    }
   }
 
   const handleMove = async (refId, direction) => {
@@ -488,14 +493,10 @@ export default function ProductDetailPage() {
         )}
 
         {tab === 'plans' && (
-          <EmptyState
-            icon={<ImageIcon className="w-8 h-8" />}
-            title="请先确认图片方案"
-            desc="先完善商品资料和参考图，生成规则确立后再回来。"
-            action={{
-              label: '返回整理资料',
-              onClick: () => handleTabChange('references'),
-            }}
+          <ImagePlansPanel
+            productId={productId}
+            references={references}
+            onOpenReferences={() => handleTabChange('references')}
           />
         )}
 

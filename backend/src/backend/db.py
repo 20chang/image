@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -37,7 +38,9 @@ CREATE TABLE IF NOT EXISTS ref_images (
     purposes TEXT NOT NULL DEFAULT '[]',
     desc TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'success',
-    sort_order INTEGER NOT NULL DEFAULT 0
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    product_relation TEXT NOT NULL DEFAULT 'unknown',
+    ai_status TEXT NOT NULL DEFAULT 'unknown'
 );
 
 CREATE TABLE IF NOT EXISTS image_plans (
@@ -52,7 +55,8 @@ CREATE TABLE IF NOT EXISTS image_plans (
     based_on_plan_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    confirmed_at TEXT
+    confirmed_at TEXT,
+    reference_usage TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_folder ON products(folder_id);
@@ -66,7 +70,72 @@ def init_db() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         _seed_if_empty(conn)
+
+
+def _column_names(conn, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r["name"] for r in rows}
+
+
+def _ensure_column(conn, table: str, col: str, ddl: str) -> None:
+    if col not in _column_names(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
+# Idempotent: only fills product_relation/ai_status when still at defaults.
+_SOURCE_TO_RELATION = {
+    "same": ("same_product", "unknown"),
+    "other": ("other_product", "unknown"),
+    "ai": ("unknown", "yes"),
+}
+
+
+def _migrate(conn) -> None:
+    _ensure_column(
+        conn, "ref_images", "product_relation", "TEXT NOT NULL DEFAULT 'unknown'"
+    )
+    _ensure_column(conn, "ref_images", "ai_status", "TEXT NOT NULL DEFAULT 'unknown'")
+    # 1 = product_relation/ai_status are intentional (user-saved or already migrated).
+    _ensure_column(conn, "ref_images", "attrs_migrated", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "image_plans", "reference_usage", "TEXT NOT NULL DEFAULT '[]'")
+
+    rows = conn.execute(
+        """
+        SELECT id, source FROM ref_images
+        WHERE attrs_migrated = 0
+        """
+    ).fetchall()
+    for row in rows:
+        mapped = _SOURCE_TO_RELATION.get((row["source"] or "").strip())
+        relation, ai = mapped if mapped else ("unknown", "unknown")
+        conn.execute(
+            """
+            UPDATE ref_images
+            SET product_relation = ?, ai_status = ?, attrs_migrated = 1
+            WHERE id = ?
+            """,
+            (relation, ai, row["id"]),
+        )
+
+    plan_rows = conn.execute(
+        "SELECT id, ref_image_ids, reference_usage FROM image_plans"
+    ).fetchall()
+    for plan in plan_rows:
+        if plan["reference_usage"] and plan["reference_usage"] != "[]":
+            continue
+        try:
+            ids = json.loads(plan["ref_image_ids"] or "[]")
+        except json.JSONDecodeError:
+            ids = []
+        skeleton = [
+            {"refImageId": rid, "roles": [], "useFor": "", "ignore": ""} for rid in ids
+        ]
+        conn.execute(
+            "UPDATE image_plans SET reference_usage = ? WHERE id = ?",
+            (json.dumps(skeleton, ensure_ascii=False), plan["id"]),
+        )
 
 
 def _seed_if_empty(conn) -> None:

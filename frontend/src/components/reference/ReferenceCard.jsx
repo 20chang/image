@@ -6,7 +6,10 @@ import {
   AlertCircle,
 } from 'lucide-react'
 import Badge from '../ui/Badge.jsx'
-import { SOURCE_LABELS, PURPOSE_LABELS } from '../../data/constants.js'
+import {
+  AI_STATUS_LABELS,
+  PRODUCT_RELATION_LABELS,
+} from '../../data/constants.js'
 
 export default function ReferenceCard({
   item,
@@ -20,8 +23,10 @@ export default function ReferenceCard({
   onRetry,
   onRemove,
 }) {
+  const relation = item.productRelation || 'unknown'
+  const aiStatus = item.aiStatus || 'unknown'
   const isUnclassified =
-    item.status === 'success' && (!item.source || item.purposes?.length === 0)
+    item.status === 'success' && relation === 'unknown' && aiStatus === 'unknown'
 
   return (
     <div
@@ -124,29 +129,13 @@ export default function ReferenceCard({
             <span className="text-[11px] font-semibold text-[var(--text-3)] tabular-nums">
               #{index + 1}
             </span>
-            <span
-              className={`rounded-[var(--radius-xs)] px-1.5 py-0.5 text-[10.5px] ${
-                item.source
-                  ? 'bg-[var(--bg-hover)] text-[var(--text-2)]'
-                  : 'bg-[var(--danger-soft)] text-[var(--danger)]'
-              }`}
-            >
-              {item.source ? SOURCE_LABELS[item.source] : '缺来源'}
+            <span className="rounded-[var(--radius-xs)] bg-[var(--bg-hover)] px-1.5 py-0.5 text-[10.5px] text-[var(--text-2)]">
+              {PRODUCT_RELATION_LABELS[relation] || relation}
             </span>
           </div>
-          <p
-            className="truncate text-[11px] text-[var(--text-3)]"
-            title={(item.purposes || [])
-              .map((p) => PURPOSE_LABELS[p])
-              .filter(Boolean)
-              .join('、')}
-          >
-            {item.purposes?.length > 0
-              ? item.purposes
-                  .map((p) => PURPOSE_LABELS[p])
-                  .filter(Boolean)
-                  .join('、')
-              : '未选用途'}
+          <p className="truncate text-[11px] text-[var(--text-3)]" title={item.desc || ''}>
+            {AI_STATUS_LABELS[aiStatus] || aiStatus}
+            {item.desc ? ` · ${item.desc}` : ''}
           </p>
         </div>
       )}

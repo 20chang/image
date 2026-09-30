@@ -63,7 +63,23 @@ def test_plan_lifecycle_survives_restart(client: TestClient, tmp_path, monkeypat
 
     updated = client.patch(
         f"/api/plans/{plan['id']}",
-        json={"prompt": "白底，正面 45 度，突出灯体轮廓与接口细节"},
+        json={
+            "prompt": "白底，正面 45 度，突出灯体轮廓与接口细节",
+            "referenceUsage": [
+                {
+                    "refImageId": ref_ids[0],
+                    "roles": ["primary"],
+                    "useFor": "灯身外观",
+                    "ignore": "背景",
+                },
+                {
+                    "refImageId": ref_ids[1],
+                    "roles": ["detail"],
+                    "useFor": "接口",
+                    "ignore": "",
+                },
+            ],
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["prompt"].endswith("接口细节")
@@ -105,7 +121,13 @@ def test_reject_foreign_ref_image_and_bad_based_on(client: TestClient):
 
     src = client.post(
         f"/api/products/{product['id']}/plans",
-        json={"name": "源", "refImageIds": [own_ref["id"]]},
+        json={
+            "name": "源",
+            "refImageIds": [own_ref["id"]],
+            "referenceUsage": [
+                {"refImageId": own_ref["id"], "roles": ["primary"], "useFor": "主体"}
+            ],
+        },
     )
     assert src.status_code == 201
 

@@ -9,6 +9,7 @@ from fastapi import Path as PathParam
 
 from .db import UPLOAD_DIR, connect, now_iso
 from .schemas import (
+    PLAN_ROLES,
     FolderCreate,
     FolderOut,
     FolderUpdate,
@@ -22,6 +23,7 @@ from .schemas import (
     ReferenceMeta,
     ReferenceOut,
     ReferenceReorder,
+    ReferenceUsageItem,
 )
 
 router = APIRouter(prefix="/api")
@@ -67,10 +69,53 @@ def _ref_row_to_out(row) -> ReferenceOut:
         desc=row["desc"],
         status=row["status"],
         sortOrder=row["sort_order"],
+        productRelation=row["product_relation"],
+        aiStatus=row["ai_status"],
     )
 
 
+def _build_usage_summary(usage: list[dict]) -> str:
+    if not usage:
+        return ""
+    parts: list[str] = []
+    for idx, item in enumerate(usage):
+        label = chr(ord("A") + idx)
+        roles = item.get("roles") or []
+        use_for = (item.get("useFor") or "").strip()
+        ignore = (item.get("ignore") or "").strip()
+        if "primary" in roles:
+            phrase = f"{label}图提供{use_for or '主体外观'}"
+        elif "detail" in roles:
+            phrase = f"{label}图补充{use_for or '细节'}"
+        elif "composition" in roles:
+            phrase = f"{label}图只参考构图"
+        elif "style" in roles:
+            phrase = f"{label}图参考视觉风格"
+        elif "usage" in roles:
+            phrase = f"{label}图参考安装与使用"
+        elif use_for:
+            phrase = f"{label}图{use_for}"
+        else:
+            phrase = f"{label}图作参考"
+        if ignore:
+            phrase = f"{phrase}，忽略{ignore}"
+        parts.append(phrase)
+    return "；".join(parts) + "。"
+
+
+def _usage_items(raw: str) -> list[dict]:
+    try:
+        data = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return data
+
+
 def _plan_row_to_out(row) -> ImagePlanOut:
+    usage = _usage_items(row["reference_usage"])
+    items = [ReferenceUsageItem(**u) for u in usage]
     return ImagePlanOut(
         id=row["id"],
         productId=row["product_id"],
@@ -84,16 +129,80 @@ def _plan_row_to_out(row) -> ImagePlanOut:
         createdAt=row["created_at"],
         updatedAt=row["updated_at"],
         confirmedAt=row["confirmed_at"],
+        referenceUsage=items,
+        usageSummary=_build_usage_summary(usage),
     )
 
 
 def _require_plan_ref_ids(conn, product_id: str, ref_image_ids: list[str]) -> None:
+    seen: set[str] = set()
     for rid in ref_image_ids:
+        if rid in seen:
+            raise HTTPException(422, f"duplicate refImageId: {rid}")
+        seen.add(rid)
         row = conn.execute(
             "SELECT product_id FROM ref_images WHERE id = ?", (rid,)
         ).fetchone()
         if not row or row["product_id"] != product_id:
             raise HTTPException(422, f"reference image not in product: {rid}")
+
+
+def _normalize_usage(
+    conn, product_id: str, usage: list[ReferenceUsageItem] | list[dict]
+) -> list[dict]:
+    items: list[dict] = []
+    seen: set[str] = set()
+    primary_count = 0
+    for entry in usage:
+        if isinstance(entry, ReferenceUsageItem):
+            ref_id = entry.refImageId
+            roles = list(entry.roles)
+            use_for = entry.useFor
+            ignore = entry.ignore
+        else:
+            ref_id = entry.get("refImageId") or ""
+            roles = list(entry.get("roles") or [])
+            use_for = entry.get("useFor") or ""
+            ignore = entry.get("ignore") or ""
+        if not ref_id:
+            raise HTTPException(422, "referenceUsage.refImageId required")
+        if ref_id in seen:
+            raise HTTPException(
+                422, f"duplicate refImageId in referenceUsage: {ref_id}"
+            )
+        seen.add(ref_id)
+        row = conn.execute(
+            "SELECT product_id FROM ref_images WHERE id = ?", (ref_id,)
+        ).fetchone()
+        if not row or row["product_id"] != product_id:
+            raise HTTPException(422, f"reference image not in product: {ref_id}")
+        for role in roles:
+            if role not in PLAN_ROLES:
+                raise HTTPException(422, f"unknown role: {role}")
+        if "primary" in roles:
+            primary_count += 1
+            if primary_count > 1:
+                raise HTTPException(422, "at most one primary reference")
+        items.append(
+            {
+                "refImageId": ref_id,
+                "roles": roles,
+                "useFor": use_for,
+                "ignore": ignore,
+            }
+        )
+    return items
+
+
+def _usage_to_ids(usage: list[dict]) -> list[str]:
+    return [u["refImageId"] for u in usage]
+
+
+def _skeleton_usage(ref_image_ids: list[str]) -> list[dict]:
+    return [
+        {"refImageId": rid, "roles": [], "useFor": "", "ignore": ""}
+        for rid in ref_image_ids
+    ]
 
 
 def _product_stats(conn, product_id: str) -> tuple[int, str | None]:
@@ -402,8 +511,9 @@ async def upload_reference(
         conn.execute(
             """
             INSERT INTO ref_images
-              (id, asset_id, product_id, url, source, purposes, desc, status, sort_order)
-            VALUES (?, ?, ?, ?, '', '[]', '', 'success', ?)
+              (id, asset_id, product_id, url, source, purposes, desc, status, sort_order,
+               product_relation, ai_status, attrs_migrated)
+            VALUES (?, ?, ?, ?, '', '[]', '', 'success', ?, 'unknown', 'unknown', 1)
             """,
             (rid, f"asset_{rid}", product_id, url, max_order + 1),
         )
@@ -423,16 +533,38 @@ def update_reference_meta(
             raise HTTPException(404, "reference not found")
         if body.desc == "error":
             raise HTTPException(500, "simulated save failure")
+        source = row["source"] if body.source is None else body.source
+        if body.purposes is None:
+            purposes = row["purposes"]
+        else:
+            purposes = json.dumps(body.purposes, ensure_ascii=False)
+        desc = row["desc"] if body.desc is None else body.desc
+        product_relation = (
+            row["product_relation"]
+            if body.productRelation is None
+            else body.productRelation
+        )
+        ai_status = row["ai_status"] if body.aiStatus is None else body.aiStatus
+        # Explicit new-field saves must not be overwritten by later migration backfill.
+        attrs_migrated = (
+            1
+            if (body.productRelation is not None or body.aiStatus is not None)
+            else row["attrs_migrated"]
+        )
         conn.execute(
             """
             UPDATE ref_images
-            SET source = ?, purposes = ?, desc = ?
+            SET source = ?, purposes = ?, desc = ?,
+                product_relation = ?, ai_status = ?, attrs_migrated = ?
             WHERE id = ?
             """,
             (
-                body.source,
-                json.dumps(body.purposes, ensure_ascii=False),
-                body.desc,
+                source,
+                purposes,
+                desc,
+                product_relation,
+                ai_status,
+                attrs_migrated,
                 ref_id,
             ),
         )
@@ -487,6 +619,24 @@ def delete_reference(ref_id: str = PathParam()) -> None:
         ).fetchone()
         if not row:
             raise HTTPException(404, "reference not found")
+        referencing = conn.execute(
+            """
+            SELECT id, name, ref_image_ids, reference_usage FROM image_plans
+            """
+        ).fetchall()
+        blocked: list[str] = []
+        for plan in referencing:
+            ids = set(json.loads(plan["ref_image_ids"] or "[]"))
+            for item in _usage_items(plan["reference_usage"]):
+                if item.get("refImageId"):
+                    ids.add(item["refImageId"])
+            if ref_id in ids:
+                blocked.append(plan["name"] or plan["id"])
+        if blocked:
+            raise HTTPException(
+                409,
+                "reference is used by plans: " + ", ".join(blocked),
+            )
         conn.execute("DELETE FROM ref_images WHERE id = ?", (ref_id,))
 
 
@@ -539,7 +689,20 @@ def create_image_plan(
         ).fetchone()
         if not product:
             raise HTTPException(404, "product not found")
-        _require_plan_ref_ids(conn, product_id, body.refImageIds)
+        if body.referenceUsage is not None:
+            usage = _normalize_usage(conn, product_id, body.referenceUsage)
+            ref_image_ids = _usage_to_ids(usage)
+            if body.refImageIds and body.refImageIds != ref_image_ids:
+                _require_plan_ref_ids(conn, product_id, body.refImageIds)
+                if set(body.refImageIds) != set(ref_image_ids):
+                    raise HTTPException(
+                        422,
+                        "refImageIds and referenceUsage must reference the same images",
+                    )
+        else:
+            _require_plan_ref_ids(conn, product_id, body.refImageIds)
+            usage = _skeleton_usage(body.refImageIds)
+            ref_image_ids = body.refImageIds
         if body.basedOnPlanId is not None:
             src = conn.execute(
                 "SELECT product_id FROM image_plans WHERE id = ?",
@@ -554,20 +717,21 @@ def create_image_plan(
             INSERT INTO image_plans (
                 id, product_id, name, image_usage, ref_image_ids,
                 drawing_request, prompt, status, based_on_plan_id,
-                created_at, updated_at, confirmed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL)
+                created_at, updated_at, confirmed_at, reference_usage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL, ?)
             """,
             (
                 plan_id,
                 product_id,
                 name,
                 body.imageUsage,
-                json.dumps(body.refImageIds, ensure_ascii=False),
+                json.dumps(ref_image_ids, ensure_ascii=False),
                 body.drawingRequest,
                 body.prompt,
                 body.basedOnPlanId,
                 ts,
                 ts,
+                json.dumps(usage, ensure_ascii=False),
             ),
         )
         row = conn.execute(
@@ -592,11 +756,16 @@ def update_image_plan(
         if not name:
             raise HTTPException(422, "plan name required")
         image_usage = row["image_usage"] if body.imageUsage is None else body.imageUsage
-        if body.refImageIds is None:
-            ref_image_ids = json.loads(row["ref_image_ids"] or "[]")
-        else:
+        if body.referenceUsage is not None:
+            usage = _normalize_usage(conn, row["product_id"], body.referenceUsage)
+            ref_image_ids = _usage_to_ids(usage)
+        elif body.refImageIds is not None:
+            _require_plan_ref_ids(conn, row["product_id"], body.refImageIds)
             ref_image_ids = body.refImageIds
-            _require_plan_ref_ids(conn, row["product_id"], ref_image_ids)
+            usage = _skeleton_usage(ref_image_ids)
+        else:
+            ref_image_ids = json.loads(row["ref_image_ids"] or "[]")
+            usage = _usage_items(row["reference_usage"])
         drawing_request = (
             row["drawing_request"]
             if body.drawingRequest is None
@@ -607,7 +776,8 @@ def update_image_plan(
             """
             UPDATE image_plans
             SET name = ?, image_usage = ?, ref_image_ids = ?,
-                drawing_request = ?, prompt = ?, updated_at = ?
+                drawing_request = ?, prompt = ?, updated_at = ?,
+                reference_usage = ?
             WHERE id = ?
             """,
             (
@@ -617,6 +787,7 @@ def update_image_plan(
                 drawing_request,
                 prompt,
                 now_iso(),
+                json.dumps(usage, ensure_ascii=False),
                 plan_id,
             ),
         )
@@ -636,6 +807,13 @@ def confirm_image_plan(plan_id: str = PathParam()) -> ImagePlanOut:
             raise HTTPException(404, "plan not found")
         if row["status"] != "draft":
             raise HTTPException(409, "plan already confirmed")
+        usage = _usage_items(row["reference_usage"])
+        incomplete = [u.get("refImageId", "") for u in usage if not u.get("roles")]
+        if incomplete:
+            raise HTTPException(
+                422,
+                "selected images need roles before confirm: " + ", ".join(incomplete),
+            )
         ts = now_iso()
         conn.execute(
             """

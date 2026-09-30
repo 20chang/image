@@ -3,7 +3,7 @@ feature: ref-image-roles
 status: delivered
 updated: 2026-09-30
 branch: feat/ref-image-roles
-commits: f79d155..WORKTREE
+commits: f79d155..b8ce3b0
 ---
 
 # 参考图属性重设 + 方案内角色

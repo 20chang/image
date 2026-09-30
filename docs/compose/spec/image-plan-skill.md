@@ -3,7 +3,7 @@ feature: image-plan-skill
 status: delivered
 updated: 2026-09-30
 branch: feat/image-plan-skill
-commits: 65a0dff..HEAD
+commits: 65a0dff..6fac55b
 ---
 
 # 图片方案 Skill 第一轮（结构 + main 样板 + 请求预览）

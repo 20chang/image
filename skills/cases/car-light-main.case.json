@@ -1,0 +1,60 @@
+{
+  "_comment": "TEST FIXTURE — 测试样例输入，非真实客户数据。用于 skill_preview dry_run 与 main 样板验证。",
+  "family": "main",
+  "product": {
+    "id": "prod-car-light-001",
+    "name": "LED 车灯 H7 55W",
+    "market": "国内电商",
+    "facts": "LED 车灯，H7 灯座，55W，6500K 白光，铝合金灯身带散热鳍片，含驱动电源与线束；宣称寿命 30000 小时；防水等级未标注。"
+  },
+  "plan": {
+    "id": "plan-car-light-main-001",
+    "name": "车灯主图",
+    "imageUsage": "商品主图",
+    "drawingRequest": "白底主图，要能看清灯身和接口，不要出现其他品牌。",
+    "prompt": ""
+  },
+  "references": [
+    {
+      "id": "ref-A",
+      "url": "/static/fixtures/car-light-full.jpg",
+      "productRelation": "same_product",
+      "aiStatus": "no",
+      "desc": "同款车灯整体图，正面偏 45°，灰白背景"
+    },
+    {
+      "id": "ref-B",
+      "url": "/static/fixtures/car-light-connector.jpg",
+      "productRelation": "same_product",
+      "aiStatus": "no",
+      "desc": "同款车灯接口特写，可见 H7 卡扣与线束接头"
+    },
+    {
+      "id": "ref-C",
+      "url": "/static/fixtures/poster-other.jpg",
+      "productRelation": "other_product",
+      "aiStatus": "unknown",
+      "desc": "其他商品海报，大面积留白 + 左下角 Logo，商品居中偏右上"
+    }
+  ],
+  "referenceUsage": [
+    {
+      "refImageId": "ref-A",
+      "roles": ["primary"],
+      "useFor": "灯身外观",
+      "ignore": "背景"
+    },
+    {
+      "refImageId": "ref-B",
+      "roles": ["detail"],
+      "useFor": "接口形状",
+      "ignore": ""
+    },
+    {
+      "refImageId": "ref-C",
+      "roles": ["composition"],
+      "useFor": "构图",
+      "ignore": "其中的商品、文字和 Logo"
+    }
+  ]
+}

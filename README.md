@@ -8,6 +8,7 @@ JavaScript React (Vite) frontend + FastAPI backend, with dev proxy wiring.
 .
 ├── backend/     # FastAPI (uv + ruff + pyright)
 ├── frontend/    # React + Vite (JavaScript)
+├── skills/      # 图片方案 Skill：通用流程 + 六族规则 + 案例
 ├── scripts/     # dev.ps1 — start both servers without hanging
 └── README.md
 ```
@@ -19,6 +20,7 @@ JavaScript React (Vite) frontend + FastAPI backend, with dev proxy wiring.
 - **`refImageIds` 与 `referenceUsage` 由后端保持一致**；草稿可缺角色，确认前需补齐；已确认方案内容冻结。
 - **「本次参考说明」** 由结构化数据生成预览（如「A图提供灯身外观；B图只补充接口…」），本轮不调用模型。
 - **迁移**：启动时幂等映射旧 `source`/`purposes`，旧列保留；被方案引用的参考图不可删除。
+- **图片方案 Skill（第一轮）**：`skills/` 含通用流程 + 六族边界 + main 完整样板；`designNotes`/`openQuestions` 暂不入库。dry_run 预览见下。
 
 ## Prerequisites
 
@@ -35,6 +37,15 @@ uv run uvicorn backend.main:app --reload --port 8000
 
 - API docs: http://localhost:8000/docs
 - Example endpoints: `GET /api/health`, `GET /api/hello?name=...`
+
+Skill 请求预览（dry_run，不调用模型）：
+
+```bash
+cd backend
+uv run python -m backend.skill_preview --family main --case ../skills/cases/car-light-main.case.json
+```
+
+输出：加载的规则文件、组装后的 messages、参考图 A/B/C ↔ refImageId 对照、字段映射说明。
 
 Lint / type-check:
 

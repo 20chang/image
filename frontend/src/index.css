@@ -1,0 +1,300 @@
+@import "tailwindcss";
+
+/*
+  Design Read — Operate tool for e-commerce image work.
+  Dials: VARIANCE 5 · MOTION 3 · DENSITY 5
+  See ../../DESIGN.md for tokens and Do/Don't.
+*/
+
+:root {
+  --bg-page: #f3f1ec;
+  --bg-surface: #fdfcfa;
+  --bg-raised: #ffffff;
+  --bg-subtle: #ebe8e1;
+  --bg-hover: rgba(28, 25, 22, 0.05);
+  --bg-active: rgba(28, 25, 22, 0.08);
+
+  --text-1: #1c1917;
+  --text-2: #57534e;
+  --text-3: #8c857e;
+  --text-inverse: #fafaf9;
+
+  --border-whisper: rgba(28, 25, 22, 0.08);
+  --border-quiet: rgba(28, 25, 22, 0.13);
+  --border-focus: #3d5a80;
+
+  --accent: #3d5a80;
+  --accent-strong: #2c4462;
+  --accent-soft: #e8eef5;
+  --accent-text: #2c4462;
+
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --success: #276749;
+  --success-soft: #eef6f0;
+  --warning: #b45309;
+  --warning-soft: #fdf6ec;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --shadow-1: 0 1px 2px rgba(28, 25, 22, 0.05);
+  --shadow-2: 0 6px 20px rgba(28, 25, 22, 0.08);
+  --shadow-3: 0 16px 48px rgba(28, 25, 22, 0.14);
+
+  --font-sans:
+    "Inter", ui-sans-serif, -apple-system, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+  --text-xs: 11.5px;
+  --text-sm: 13px;
+  --text-base: 14.5px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.55;
+  color: var(--text-1);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.5) 0%,
+      rgba(255, 255, 255, 0) 160px
+    ),
+    var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+textarea {
+  line-height: 1.55;
+}
+
+/* Browser surfaces themed from the palette */
+::selection {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+input,
+textarea {
+  caret-color: var(--accent-strong);
+}
+
+a {
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+
+/* Numerals for counts, dates, prices */
+.tabular-nums,
+time,
+input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(28, 25, 22, 0.18) transparent;
+}
+
+/* Shared surface rhythm */
+@layer components {
+  .page {
+    padding: 28px 32px 48px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .page-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+
+  .page-title {
+    margin: 0;
+    font-size: var(--text-xl);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.25;
+    color: var(--text-1);
+  }
+
+  .page-desc {
+    margin: 6px 0 0;
+    max-width: 36rem;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+    line-height: 1.6;
+  }
+
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--bg-subtle) 0%,
+      color-mix(in srgb, var(--bg-subtle) 70%, white) 50%,
+      var(--bg-subtle) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.2s var(--ease-out) infinite;
+    border: 1px solid var(--border-whisper);
+    border-radius: var(--radius-md);
+  }
+
+  .field-label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--text-1);
+  }
+
+  .field-input {
+    width: 100%;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-quiet);
+    background: var(--bg-raised);
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
+  }
+
+  /* Search field reserves icon gutter so placeholder never collides */
+  .field-input.field-search {
+    padding-left: 36px;
+    padding-right: 36px;
+  }
+
+  /* Hide native search clear — we render our own */
+  .field-input::-webkit-search-cancel-button,
+  .field-input::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+    display: none;
+  }
+
+  .field-input:hover {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--border-quiet));
+  }
+
+  .field-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+
+  .field-input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+
+  .field-hint {
+    margin-top: 6px;
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  .field-error {
+    margin-top: 6px;
+    font-size: var(--text-xs);
+    color: var(--danger);
+  }
+
+  .panel {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-whisper);
+    border-radius: var(--radius-md);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@media (min-width: 640px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 960px) {
+  .card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1200px) {
+  .card-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 20px 16px 40px;
+  }
+}

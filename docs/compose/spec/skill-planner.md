@@ -1,14 +1,34 @@
 ---
 feature: skill-planner
-status: in-progress
+status: delivered
 updated: 2026-10-05
 branch: feat/skill-planner
-commits:
+commits: 1221e29..fe93121
 ---
 
 # Skill Planner（真实方案 → 看图规划 → 采用到草稿）
 
 ## Report
+
+**What was built** — `image_plans` 增加 `family` / `design_notes` / `open_questions`（仅 `main` 可创建），新增 `plan_runs` 运行表（系统/用户 prompt 正文内联快照 + 规则 sha256 + `raw_output`），`now_iso()` 改为秒精度、run 列表用 `rowid` 作同秒 tiebreak。`skill_preview` 能从库加载真实方案（`load_plan_case`，与夹具同构校验），把 `/uploads` 参考图读成 base64 并按 `referenceUsage` 顺序塞进 messages content 数组；缺文件整次失败。新增薄规划客户端 `planner/client.py`（httpx + 环境变量，只规划不生图）与固定 JSON 解析。API：`POST /plans/{id}/skill-run`（缺 primary 落 failed run 并给出缺失/现有角色清单，不调模型）、`POST /plans/{id}/adopt`、`GET /plans/{id}/runs`。前端 `ImagePlansPanel`：family 下拉（其余族置灰）、AI 生成前先保存草稿、结果四段以当前 run 为准、采纳后隐藏按钮、已确认方案「复制草稿」带 `basedOnPlanId`。
+
+**Verification** — 命令与结果：
+
+- `uv run pytest tests/ -q` — PASS（56 passed；原 38 + skill_planner 18）
+- `uv run ruff check src/ tests/` / `ruff format --check` — PASS
+- `uv run pyright src/` — PASS（0 errors）
+- `uv run python -m backend.skill_preview --family main --case ../skills/cases/car-light-main.case.json` — PASS（占位路径 dry_run 不崩，`images_resolved: False`；system prompt 含「不编造事实 / 结构必须有依据」）
+- `npm run build` — PASS；`oxlint src` — 0 errors（12 warnings 为既有风格提示）
+- 人工对照 `car-light-main.sample.md`：组装只注入 facts/desc/角色范围，不生成结构细节；「已删除的无依据细节」依赖模型侧遵守 main.md 约束，需真模型实测再校（见 Journey 5）
+- Reviewer（general-1）对 `1221e29..2c13a79` 提出的 CRITICAL 已在 `fe93121` 修复：同秒 run 排序、缺 key/确定性/排序/confirmed runs 测试、前端过期 run 展示与 adopt 按钮
+
+**Journey log** —
+
+1. 环境禁止嵌套 `git worktree add`，改在当前工作区切 `feat/skill-planner` 分支。
+2. `UPLOAD_DIR` 曾被 import 绑定导致 monkeypatch 失效 — 运行时经 `db.UPLOAD_DIR` 读取。
+3. 同秒 `created_at` + 随机 uuid id 会让 `ORDER BY created_at, id` 不稳定 — 用 `rowid` 作插入序 tiebreak。
+4. 快照测试会临时改 `skills/families/main.md`，结束务必 `git checkout --` 还原。
+5. 规划与生图已分模块；接生图时另开模块与 `generator_model` 列。真实出图前不要宣称「无依据细节」已杜绝——那是模型行为，需人评案例。
 
 ## [S1] Problem
 
@@ -160,10 +180,10 @@ GET  /api/plans/{id}/runs          倒序，confirmed 也可查
 
 ## Tasks
 
-- [ ] T1: `family` 落库并成为一等字段 — acceptance: 旧库迁移出 `family` 列且历史行为 `main`；省略创建得 `main`；`family=scene` 返回 422；38 测试全绿（covers: S2.1, S2.6）
-- [ ] T2: 图片像素进入模型请求 — acceptance: 真实 `UPLOAD_DIR` 文件下 `messages[1].content` 为数组且图片序=referenceUsage；缺文件报错含 refImageId+路径；`images_resolved` 实算为 True；占位路径 dry-run 不崩（covers: S2.2）
-- [ ] T3: `load_plan_case` + 薄规划客户端 — acceptance: `load_plan_case` 产出通过 `validate_case` 且与 car-light 夹具同构；缺 `PLANNER_API_KEY` 明确报错；失败不改方案 `prompt`；非预期 JSON 进 `raw_output`；两次组装 system prompt 逐字节相同（covers: S2.2, S2.3）
-- [ ] T4: `plan_runs` 表 + `now_iso` 秒精度 + `GET /runs` — acceptance: 改 `main.md` 后历史 `system_prompt` 不变；失败也落 run 且 `error`/`raw_output` 非空；一分钟内 3 次 run 顺序正确；confirmed 可查 runs（covers: S2.1）
-- [ ] T5: `designNotes`/`openQuestions` 入库 + skill-run/adopt 流程 + 前端 — acceptance: 生成后仍 draft 且方案字段不变；采纳后三字段落库持久化；openQuestions 有提示不阻断；缺 primary 不调模型且有可读缺失清单；parse 失败 run=failed 可重试草稿不丢（covers: S2.1, S2.4, S2.6, S2.7）
-- [ ] T6: 「基于此生成新草稿」 — acceptance: 复制出 draft、`basedOnPlanId` 指向来源、改新草稿不影响原方案；省略 `basedOnPlanId` 行为不变（covers: S2.5, S2.7）
-- [ ] T7: 集成验证与人工抽查 — acceptance: 38+新增测试全绿；ruff/pyright 过；人工对照 `car-light-main.sample.md` 标准：prompt 无无依据细节、设计选择可溯源（covers: S2.8）
+- [x] T1: `family` 落库并成为一等字段 — acceptance: 旧库迁移出 `family` 列且历史行为 `main`；省略创建得 `main`；`family=scene` 返回 422；38 测试全绿（covers: S2.1, S2.6）
+- [x] T2: 图片像素进入模型请求 — acceptance: 真实 `UPLOAD_DIR` 文件下 `messages[1].content` 为数组且图片序=referenceUsage；缺文件报错含 refImageId+路径；`images_resolved` 实算为 True；占位路径 dry-run 不崩（covers: S2.2）
+- [x] T3: `load_plan_case` + 薄规划客户端 — acceptance: `load_plan_case` 产出通过 `validate_case` 且与 car-light 夹具同构；缺 `PLANNER_API_KEY` 明确报错；失败不改方案 `prompt`；非预期 JSON 进 `raw_output`；两次组装 system prompt 逐字节相同（covers: S2.2, S2.3）
+- [x] T4: `plan_runs` 表 + `now_iso` 秒精度 + `GET /runs` — acceptance: 改 `main.md` 后历史 `system_prompt` 不变；失败也落 run 且 `error`/`raw_output` 非空；一分钟内 3 次 run 顺序正确；confirmed 可查 runs（covers: S2.1）
+- [x] T5: `designNotes`/`openQuestions` 入库 + skill-run/adopt 流程 + 前端 — acceptance: 生成后仍 draft 且方案字段不变；采纳后三字段落库持久化；openQuestions 有提示不阻断；缺 primary 不调模型且有可读缺失清单；parse 失败 run=failed 可重试草稿不丢（covers: S2.1, S2.4, S2.6, S2.7）
+- [x] T6: 「基于此生成新草稿」 — acceptance: 复制出 draft、`basedOnPlanId` 指向来源、改新草稿不影响原方案；省略 `basedOnPlanId` 行为不变（covers: S2.5, S2.7）
+- [x] T7: 集成验证与人工抽查 — acceptance: 38+新增测试全绿；ruff/pyright 过；人工对照 `car-light-main.sample.md` 标准：prompt 无无依据细节、设计选择可溯源（covers: S2.8）

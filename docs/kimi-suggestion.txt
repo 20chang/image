@@ -1,0 +1,94 @@
+代码全部读完，测试也在本地复跑了。以下按你要求的四部分回复。**评审基线：`feat/image-plan-skill` @ `1221e29`（与任务书一致，无更新）；master @ `65a0dff`，Skill 未合入。我在沙箱按 `uv.lock` 对齐依赖后复跑 `pytest tests/`，38 passed，与任务书声明一致。**
+
+---
+
+## 1. 实际架构与关键断点
+
+### 数据流（代码事实）
+
+```
+文件夹 → 商品(name/market/facts) → 参考图(url/desc/productRelation/aiStatus/sortOrder)
+                                  → 图片方案(imageUsage/drawingRequest/prompt/
+                                             referenceUsage[]/status: draft→confirmed)
+```
+
+- 参考图自身属性与方案内用途确实分开了：`ref_images.product_relation/ai_status`（db.py:42-43）vs `image_plans.reference_usage` JSON 列（db.py:59）。方案内数组顺序即使用顺序，A/B/C 是展示标签（`assemble.py:31` `_ref_label`；前端 `ImagePlansPanel.jsx:25`）——与约定一致。
+- 约束落得很实：参考图必须属于本商品、不重复、角色枚举校验、至多一个 primary（`routers.py:150-194` `_normalize_usage`）；确认时角色不齐会 422 阻断（`routers.py:810-816`）；确认后不可改（`routers.py:753-754`）。`skill_preview/loader.py` 复用同一组枚举常量校验 case，没有漂移。
+- 知识加载：`loader.py` 读 `skills/common/*.md` + 指定族 md，拼成 system prompt；`assemble.py:130-149` 把商品资料、方案、参考图说明拼成 user prompt。六族文件统一六节，main 完整，其余五族是边界占位（wear.md 等，头部标"待实现"）。
+- 前端 `ImagePlansPanel.jsx`：纯人工流程——手工写 prompt、勾选参考图配角色、保存草稿、确认冻结。无任何 AI 生成入口。
+
+### 关键断点（按对下一轮的阻塞程度排序）
+
+| #    | 断点                                                         | 位置                    | 事实/推断 |
+| ---- | ------------------------------------------------------------ | ----------------------- | --------- |
+| B1   | **方案没有 family 字段**。`image_plans` 表无此列；前端 `imageUsage` 硬编码"商品主图"（`ImagePlansPanel.jsx:170`）；family 只存在于 CLI 参数（`__main__.py:21`） | schemas.py:94、db.py:46 | 事实      |
+| B2   | **`--plan-id` 未接库**，`skill_preview` 只读 case JSON 测试夹具（`__main__.py:36-40`），等于真实方案数据和 Skill 是两条不相交的线 | assemble.py:108         | 事实      |
+| B3   | **图片像素不进模型**：user prompt 里只有 URL 文本，`images_resolved: False`（assemble.py:184） | assemble.py:35-41       | 事实      |
+| B4   | **无模型调用层**：`model: "TBD-next-round"`（assemble.py:152），无 provider、无运行记录表 | 全库                    | 事实      |
+| B5   | `designNotes`/`openQuestions` 无列，只在 IO 契约里登记了缺口（10-io-contract.md:24-29） | db.py                   | 事实      |
+| B6   | **知识散落在两处代码里**：角色的 useFor/ignore 建议值硬编码在前端 `ROLE_SUGGESTIONS`（ImagePlansPanel.jsx:52-58），`usageSummary` 生成逻辑前后端各写了一遍（routers.py:77 vs ImagePlansPanel.jsx:23）——这是未来的漂移点 | 两处                    | 事实      |
+| B7   | 车灯案例的"样例输出"是人工编写的预期，未经模型实测（sample.md 头部如实标注了） | cases/                  | 事实      |
+
+一个命名隐患（推断）：`roles` 已被"参考图角色"占用。我们此前讨论的 role（main/副图，货架位置）将来入库时必须换个名字（如 `slot`/`position`），否则两个 role 撞车。
+
+---
+
+## 2. 此前建议的取舍
+
+对照仓库现实，逐条判：
+
+| 建议                        | 判定                 | 理由                                                         |
+| --------------------------- | -------------------- | ------------------------------------------------------------ |
+| 任务包 / 规则编译           | **保留，且已有雏形** | `assemble.py` 就是编译器胚胎：规则过滤（按 family）+ 资料组装已完成。下一轮只需让它读真实库数据、把图片变成像素输入。"知识选择确定性化"的方向被现有代码证实可行 |
+| 案例快照 / 运行记录         | **保留，下一轮就做** | 这是养成器的地基，且成本极低（一张表）。没有它，模型实测结果无法回放 |
+| 模型适配层                  | **保留，但做薄**     | 本轮只需要一个"messages+图片→文本"的规划模型 provider。不要现在做多 provider 抽象、队列、重试——那是后期的事 |
+| 设计决策表（槽位+逐条依据） | **调整**             | 现在六族只有一族有规则，槽位化没有足够样本支撑。替代做法：先落 `designNotes` 列，并**沿用 sample.md 已示范的文风**——模型输出中每个设计选择必须标注依据来源（facts / 某 refImageId / 规则条文），用文字约束代替 schema 约束。等 wear、scene 各有 3 个以上真实案例后再抽象槽位 |
+| 确定性 Prompt 编译          | **暂缓**             | 前提是不存在词表。词表要从真实审核数据里长出来，现在做编译器等于空转 |
+| 按族/类目/材质/平台检索知识 | **调整**             | 按族加载已有（`FAMILY_FILES`）。类目检索暂缓——`products` 表连类目字段都没有（只有 folder 归属），不要为检索先加类目；等类目补充规则真实出现时再加 |
+| 回归评测 / 黄金集           | **调整**             | 现在没有任何真实出图，建黄金集无对象。替代：车灯 case + sample.md 就是最小的"对照基准"，模型实测输出先和它人评对比。黄金集等有 10+ 真实案例后再立 |
+| 养成器提案与人工审核        | **暂缓**             | 案例数为 0，提案无原料。先定案例记录结构（下一轮顺带完成），养成器最早在下下轮之后 |
+| role×family 正交拆分        | **部分实施**         | 本轮只加 `family` 列（便宜、必须）；货架位置 role 暂不落字段——产品目前只做主图，`imageUsage` 自由文本够用，等套图功能再正式化 |
+
+**知识如何被 Agent 使用（当前形态下）**：规则文件 → system prompt 全文注入（main.md 只有 46 行，全文注入没问题）；参考图约定已在数据层强制（primary≤1、角色必填）；设计依据通过输出格式要求模型自证（学 sample.md）。检索、槽位、词表都不上。
+
+**经验如何进入知识体系**：本轮之后的路径是——每次运行落快照 → 人评出图/输出 → 好的输出片段人工摘进族规则的"设计选择"或案例 → 失败进"约束"或待确认清单。全部人工，节奏固定即可。
+
+---
+
+## 3. 下一轮任务：打通"真实方案 → Skill → 看图规划 → 采用到草稿"
+
+你的候选方向是对的，我背书，并补齐边界。**一句话：把 B1–B5 一次性关掉，让车灯案例从"测试夹具"变成"真实方案跑真模型"。**
+
+**目标**：在图片方案模块内，草稿态方案可点击"AI 生成方案"→ 后端从库读取真实数据组装请求 → 调用看图规划模型（图片像素真实传入）→ 解析四段输出 → 落运行记录 → 用户审阅后"采用"填入草稿的 `prompt`/`designNotes`。
+
+**改哪里 / 复用什么 / 新增什么**：
+
+1. **`db.py`**（拟新增）：`image_plans` 加列 `family TEXT NOT NULL DEFAULT 'main'`、`design_notes TEXT NOT NULL DEFAULT ''`、`open_questions TEXT NOT NULL DEFAULT '[]'`（走现有 `_ensure_column` 迁移模式）；拟新增表 `skill_runs`：`id, plan_id, family, status(success/failed), request_json, response_text, parsed_json, error, rule_hashes, created_at, adopted_at`。`rule_hashes` 存所加载规则文件的内容哈希——这是将来回归时区分"知识变了还是模型变了"的关键。
+2. **`skill_preview/loader.py`**（拟新增函数 `load_plan_case(conn, plan_id)`）：从库读商品+方案+参考图，组装成与 case JSON **同构**的 dict，然后**复用现有 `validate_case`** 校验——保证夹具和真实数据走同一套闸门。
+3. **`skill_preview/assemble.py`**（复用 `assemble_request`）：把 `_image_status` 的占位逻辑替换为真实图片读取——拟新增图片解析器，从 `UPLOAD_DIR` 读文件转字节/base64，严格按 `referenceUsage` 顺序与文字说明一一对应传入。
+4. **拟新增 `skill_preview/provider.py`**：薄适配层，OpenAI 兼容接口，密钥走环境变量，职责只有"messages + 图片 → 文本"。**只接规划模型，不接生图模型**——规划（看参考图出方案）和生图（按 prompt 出像素）是两个模型两类失败，混在一起无法归因。
+5. **拟新增 `skill_preview/parse.py`**：要求规划模型输出固定 JSON（`designNotes / prompt / openQuestions[] / refUsageNotes`），解析失败即 run 失败落记录，不允许自由文本入库。
+6. **`routers.py`**（拟新增两个端点）：`POST /plans/{id}/skill-run`（仅 draft 可执行；先跑必要输入检查——main 族缺 `primary` 参考图时**不调用模型**，直接返回缺失清单，把 main.md:18 的规则变成代码）；`POST /plans/{id}/adopt`（把某次成功 run 的 `prompt`/`designNotes`/`openQuestions` 写入草稿，记 `adopted_at`）。
+7. **前端 `ImagePlansPanel.jsx`**（拟新增）：草稿态加"AI 生成方案"按钮；展示运行结果四段（含 openQuestions 醒目提示）；"采用到草稿"按钮；失败时可重试。`family` 本轮 UI 固定 main，不加选择器。
+
+**验收标准**（逐条可验）：
+
+- 用真实车灯商品（真实上传的参考图）建方案 → AI 生成 → 输出四段齐全、prompt 落库、run 记录含完整 request 快照与规则哈希；
+- 缺 primary 时阻断且返回缺失清单；模型超时/解析失败时 run 记 failed、前端可重试、草稿数据不丢；
+- **人工抽查**：输出 prompt 中不含输入无依据的商品结构描述（对照 sample.md 的"已删除的无依据细节"标准）；
+- 输出中设计选择带依据标注（facts/ref-ID/规则），抽查可溯源；
+- 测试：38 个保持通过 + 新增（load_plan_case 与夹具同构、阻断逻辑、parse 失败路径、adopt 写库）。
+
+**明确不做**：生图模型、其余五族规则补全、套图、family 选择 UI、回归自动化。
+
+---
+
+## 4. 完成后的后续两步
+
+**第二步：接生图模型，开始积累真实案例。** 进入条件：本轮验收全过，且你用 3 个以上真实商品跑过规划、输出质量你认可（不需要完美，需要"依据可溯源"这一条稳定成立）。内容：生图 provider（同样薄）、`generations` 表（拟新增：plan_id、run_id、最终 prompt、图、你的评价结论+失败标签）、前端出图与"采用/返工"按钮。**这一步的产出物不是图，是第一批带评价的真实案例。**
+
+**第三步：启动手动养成节奏。** 进入条件：积累约 20 条带评价的案例。内容：定失败标签枚举（商品失真/构图/质感/文字/风格漂移，每个映射到规则/参考图/措辞/模型边界四类根因）、固定复盘节奏、把复盘结论人工写回族规则文件（每条附来源案例 ID）。**当复盘时发现"同类提案反复出现"，才到了写养成器 Skill 的时候**——那时你手里有提案样本，知道什么算好提案。
+
+---
+
+两个最后提醒：B6 的前后端重复逻辑（`usageSummary`、`ROLE_SUGGESTIONS`）本轮不必修，但记进欠账清单，下次动相关代码时收编；车灯 sample.md 在模型实测后要补一轮对照评审——它是人工预期，实测差距本身就是第一批知识。

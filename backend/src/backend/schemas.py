@@ -99,6 +99,9 @@ class ImagePlanCreate(BaseModel):
     prompt: str = ""
     basedOnPlanId: str | None = None
     referenceUsage: list[ReferenceUsageItem] | None = None
+    family: str = "main"
+    designNotes: str = ""
+    openQuestions: list[str] = Field(default_factory=list)
 
 
 class ImagePlanUpdate(BaseModel):
@@ -108,6 +111,7 @@ class ImagePlanUpdate(BaseModel):
     drawingRequest: str | None = None
     prompt: str | None = None
     referenceUsage: list[ReferenceUsageItem] | None = None
+    family: str | None = None
 
 
 class ImagePlanOut(BaseModel):
@@ -125,3 +129,29 @@ class ImagePlanOut(BaseModel):
     confirmedAt: str | None = None
     referenceUsage: list[ReferenceUsageItem] = Field(default_factory=list)
     usageSummary: str = ""
+    family: str = "main"
+    designNotes: str = ""
+    openQuestions: list[str] = Field(default_factory=list)
+
+
+class PlanRunOut(BaseModel):
+    id: str
+    planId: str
+    status: str
+    plannerModel: str = ""
+    systemPrompt: str = ""
+    userPrompt: str = ""
+    inputRefIds: list[str] = Field(default_factory=list)
+    rulesSnapshot: list[dict] = Field(default_factory=list)
+    rawOutput: str | None = None
+    designNotes: str | None = None
+    openQuestions: list[str] = Field(default_factory=list)
+    generatedPrompt: str | None = None
+    refUsageNotes: str | None = None
+    error: str | None = None
+    createdAt: str
+    adoptedAt: str | None = None
+
+
+class AdoptRunRequest(BaseModel):
+    runId: str = Field(min_length=1)

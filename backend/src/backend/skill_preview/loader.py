@@ -170,3 +170,58 @@ def load_case(case_path: str | Path) -> dict[str, Any]:
         raise SkillPreviewError(f"case 顶层必须是对象: {path}")
 
     return validate_case(data, source=f"case({path.name})")
+
+
+def load_plan_case(conn, plan_id: str) -> dict[str, Any]:
+    """从库读取商品+方案+参考图，组装成与 case JSON 同构的 dict 并校验。"""
+    plan = conn.execute("SELECT * FROM image_plans WHERE id = ?", (plan_id,)).fetchone()
+    if plan is None:
+        raise SkillPreviewError(f"plan not found: {plan_id}")
+    product = conn.execute(
+        "SELECT * FROM products WHERE id = ?", (plan["product_id"],)
+    ).fetchone()
+    if product is None:
+        raise SkillPreviewError(f"product not found: {plan['product_id']}")
+
+    try:
+        usage = json.loads(plan["reference_usage"] or "[]")
+    except json.JSONDecodeError as exc:
+        raise SkillPreviewError(f"plan.reference_usage JSON 损坏: {plan_id}") from exc
+    if not isinstance(usage, list):
+        raise SkillPreviewError(f"plan.reference_usage 必须是数组: {plan_id}")
+
+    ref_ids = [u.get("refImageId") for u in usage if isinstance(u, dict)]
+    references: list[dict[str, Any]] = []
+    for rid in ref_ids:
+        row = conn.execute("SELECT * FROM ref_images WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            raise SkillPreviewError(f"reference not found: {rid}")
+        references.append(
+            {
+                "id": row["id"],
+                "url": row["url"],
+                "desc": row["desc"] or "",
+                "productRelation": row["product_relation"] or "unknown",
+                "aiStatus": row["ai_status"] or "unknown",
+            }
+        )
+
+    case = {
+        "family": plan["family"] or "main",
+        "product": {
+            "id": product["id"],
+            "name": product["name"],
+            "market": product["market"] or "",
+            "facts": product["facts"] or "",
+        },
+        "plan": {
+            "id": plan["id"],
+            "name": plan["name"],
+            "imageUsage": plan["image_usage"] or "",
+            "drawingRequest": plan["drawing_request"] or "",
+            "prompt": plan["prompt"] or "",
+        },
+        "references": references,
+        "referenceUsage": usage,
+    }
+    return validate_case(case, source=f"plan({plan_id})")

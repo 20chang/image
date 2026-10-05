@@ -170,3 +170,30 @@ export async function updatePlan(planId, patch) {
 export async function confirmPlan(planId) {
   return request(`/plans/${planId}/confirm`, { method: 'POST' })
 }
+
+export async function skillRunPlan(planId) {
+  return request(`/plans/${planId}/skill-run`, { method: 'POST' })
+}
+
+export async function adoptPlanRun(planId, runId) {
+  return request(`/plans/${planId}/adopt`, { method: 'POST', body: { runId } })
+}
+
+export async function listPlanRuns(planId) {
+  return request(`/plans/${planId}/runs`)
+}
+
+export async function createPlanFrom(productId, sourcePlan) {
+  return createPlan(productId, {
+    name: `${sourcePlan.name}（副本）`,
+    family: sourcePlan.family || 'main',
+    imageUsage: sourcePlan.imageUsage,
+    drawingRequest: sourcePlan.drawingRequest,
+    prompt: sourcePlan.prompt,
+    designNotes: sourcePlan.designNotes || '',
+    openQuestions: sourcePlan.openQuestions || [],
+    basedOnPlanId: sourcePlan.id,
+    referenceUsage: sourcePlan.referenceUsage || [],
+    refImageIds: sourcePlan.refImageIds || [],
+  })
+}

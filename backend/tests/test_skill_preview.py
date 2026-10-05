@@ -16,6 +16,24 @@ CASE_PATH = (
 )
 
 
+def _user_text(result: dict) -> str:
+    content = result["model_request"]["messages"][1]["content"]
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        p.get("text", "")
+        for p in content
+        if isinstance(p, dict) and p.get("type") == "text"
+    )
+
+
+def _image_blocks(result: dict) -> list[dict]:
+    content = result["model_request"]["messages"][1]["content"]
+    if isinstance(content, str):
+        return []
+    return [p for p in content if isinstance(p, dict) and p.get("type") == "image_url"]
+
+
 def _base_case() -> dict:
     return {
         "family": "main",
@@ -92,7 +110,7 @@ def test_desc_and_url_enter_request(tmp_path: Path) -> None:
     data["references"][0]["desc"] = "改过的整体图备注"
     data["references"][0]["url"] = "https://cdn.example.com/a-new.jpg"
     result = assemble_request("main", str(_write_case(tmp_path, data)))
-    user = result["model_request"]["messages"][1]["content"]
+    user = _user_text(result)
     assert "改过的整体图备注" in user
     assert "https://cdn.example.com/a-new.jpg" in user
     imgs = {i["refImageId"]: i for i in result["image_inputs"]}
@@ -104,7 +122,7 @@ def test_fixture_url_marked_as_placeholder(tmp_path: Path) -> None:
     result = assemble_request("main", str(_write_case(tmp_path, _base_case())))
     imgs = {i["refImageId"]: i for i in result["image_inputs"]}
     assert "测试占位" in imgs["ref-A"]["status"]
-    user = result["model_request"]["messages"][1]["content"]
+    user = _user_text(result)
     assert "不代表模型已收到图片" in user
     status = result["assembly_status"]
     assert status["rules_loaded"] is True
@@ -138,7 +156,7 @@ def test_reorder_keeps_identity_and_content(tmp_path: Path) -> None:
     assert [o["refImageId"] for o in order] == ["ref-C", "ref-A"]
     assert [o["label"] for o in order] == ["A", "B"]
 
-    user = result["model_request"]["messages"][1]["content"]
+    user = _user_text(result)
     # A 现在是 ref-C，其备注与 URL 必须跟着走
     a_pos = user.index("A（ref-C）")
     c_pos = user.index("海报备注-丙")
@@ -161,11 +179,8 @@ def test_desc_change_changes_request(tmp_path: Path) -> None:
     path = tmp_path / "case2.json"
     path.write_text(json.dumps(data2, ensure_ascii=False), encoding="utf-8")
     r2 = assemble_request("main", str(path))
-    assert (
-        r1["model_request"]["messages"][1]["content"]
-        != r2["model_request"]["messages"][1]["content"]
-    )
-    assert "完全不同的备注" in r2["model_request"]["messages"][1]["content"]
+    assert _user_text(r1) != _user_text(r2)
+    assert "完全不同的备注" in _user_text(r2)
 
 
 # ---------- 拒绝非法输入 ----------
@@ -311,6 +326,70 @@ def test_cli_zero_on_good_case() -> None:
 
     code = main(["--family", "main", "--case", str(CASE_PATH)])
     assert code == 0
+
+
+# ---------- 真实图片进入请求 ----------
+
+
+def _real_case(urls: list[str]) -> dict:
+    data = _base_case()
+    for i, url in enumerate(urls):
+        data["references"][i]["url"] = url
+    data["referenceUsage"] = data["referenceUsage"][: len(urls)]
+    data["references"] = data["references"][: len(urls)]
+    return data
+
+
+def test_real_images_enter_content_array(tmp_path: Path, monkeypatch) -> None:
+    from backend import db
+
+    upload = tmp_path / "uploads"
+    upload.mkdir()
+    (upload / "a.png").write_bytes(b"img-a")
+    (upload / "b.png").write_bytes(b"img-b")
+    (upload / "c.png").write_bytes(b"img-c")
+    monkeypatch.setattr(db, "UPLOAD_DIR", upload)
+
+    result = assemble_request(
+        "main",
+        str(
+            _write_case(
+                tmp_path,
+                _real_case(["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]),
+            )
+        ),
+    )
+    content = result["model_request"]["messages"][1]["content"]
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    imgs = _image_blocks(result)
+    assert len(imgs) == 3
+    assert imgs[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    # 物理顺序 = referenceUsage = A/B/C
+    assert result["ref_order"][0]["refImageId"] == "ref-A"
+    assert result["assembly_status"]["images_resolved"] is True
+    assert result["assembly_status"]["images_missing"] == []
+
+
+def test_missing_upload_file_raises_with_ref(tmp_path: Path, monkeypatch) -> None:
+    from backend import db
+
+    upload = tmp_path / "uploads"
+    upload.mkdir()
+    (upload / "a.png").write_bytes(b"img-a")
+    monkeypatch.setattr(db, "UPLOAD_DIR", upload)
+
+    with pytest.raises(SkillPreviewError, match="ref-B") as exc:
+        assemble_request(
+            "main",
+            str(
+                _write_case(
+                    tmp_path,
+                    _real_case(["/uploads/a.png", "/uploads/b-missing.png"]),
+                )
+            ),
+        )
+    assert "b-missing.png" in str(exc.value)
 
 
 # ---------- 与方案接口约束一致 ----------

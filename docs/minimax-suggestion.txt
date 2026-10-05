@@ -1,0 +1,301 @@
+建议：# 评审报告
+
+**实际检查的 commit：`1221e29`**（`feat/image-plan-skill`，2026-09-30 20:39:10）
+master 为 `65a0dff`，与你给的基线完全一致，分支无更新。`feat` 领先 master 4 个提交（`6fac55b` / `48a52e0` / `b119e3c` / `1221e29`），全部集中在 `skills/` 和 `backend/src/backend/skill_preview/`，**没有改动任何既有数据模型或接口**——这一点对你下面的取舍很关键。
+
+一处执行差异需要说明：沙箱里 pypi 镜像不可达，`uv sync` 失败，**38 个测试我没能真正跑起来**。我改为静态清点，得到 `test_image_plans.py` 4 个 + `test_ref_image_roles.py` 10 个 + `test_skill_preview.py` 24 个 = **38 个 test 函数，与你的数字吻合**。但 `assemble.py` / `loader.py` 我用一个最小 pydantic shim 实际跑通了，下面标「实测」的都是真实输出。
+
+---
+
+## 一、实际架构与关键断点
+
+### 现有数据流（代码事实）
+
+| 环节     | 位置                                  | 实际行为                                                     |
+| -------- | ------------------------------------- | ------------------------------------------------------------ |
+| 传参考图 | `routers.py:480` `upload_reference`   | 写 `UPLOAD_DIR/{rid}{suffix}`，插入 `ref_images`，`url=/uploads/...`，`sort_order=max+1` |
+| 建方案   | `routers.py:680` `create_image_plan`  | `referenceUsage` 为真源，`ref_image_ids` 由 `_usage_to_ids` 派生；校验归属、角色枚举、primary≤1 |
+| 改草稿   | `routers.py:744` `update_image_plan`  | `status != 'draft'` 直接 409（已确认不可变）                 |
+| 确认     | `routers.py:800` `confirm_image_plan` | 任何 usage 项 `roles` 为空 → 422；置 `confirmed` + `confirmed_at` |
+| 删图保护 | `routers.py:614` `delete_reference`   | 扫描全表 `ref_image_ids` **和** `reference_usage`，命中即 409 |
+| 前端     | `ImagePlansPanel.jsx`                 | 勾选顺序=使用顺序（`moveItem` 上下移），`isRiskyRef` 提示，`ROLE_SUGGESTIONS` 自动填 useFor/ignore |
+
+### 知识加载方式（代码事实）
+
+`loader.load_rules`（`loader.py:39`）把 `common/00-overview.md` + `common/10-io-contract.md` + `families/{family}.md` **整篇读成字符串**；`assemble.py:122-124` 用 `\n\n---\n\n` 拼成 system prompt。**实测 main 族 system prompt = 3719 字符**。
+
+`family` 只是 CLI 参数（`__main__.py:19`），`load_rules` 用硬编码的 `FAMILY_FILES` 六项校验。**没有任何结构化解析、没有按节提取、没有机器可校验的约束。**
+
+### 四个关键断点
+
+**断点 1（最严重）：图片从未进入模型请求。**
+
+实测——把 case 里的 url 换成真实上传路径 `/uploads/r123abc.jpg` 后：
+
+```
+messages 条目数: 2
+model 字段值: 'TBD-next-round'
+system 含 image_url: False | 含 base64: False
+```
+
+`model_request` 就是 `{"model": "TBD-next-round", "messages": [{"role":"system","content": 字符串}, {"role":"user","content": 字符串}]}`。两个纯文本。`assemble.py:184` 的 `images_resolved: False` 是**硬编码常量**，不是算出来的。`_image_status`（`assemble.py:35`）只按 url 前缀返回一句展示文案。
+
+**后果**：整个项目的定位是"看图规划"，但当前 Agent 只能看到 `desc` 文字 + 一个路径字符串。prompt 里写着「参考图图片输入」，模型却从未收到任何像素。
+
+**断点 2：`family` 没有落库。**
+
+`db.py:46-60` 的 `image_plans` 表没有 `family` 列（我 grep 确认）。前端 `ImagePlansPanel.jsx:170` 硬编码 `imageUsage: '商品主图'`，按钮文案「新建主图方案」。**Skill 体系以 family 为主轴路由，但 family 活在 CLI 参数里，方案里没有。** 要打通，只能靠命令行手工传 `--family`。
+
+**断点 3：模型调用能力为零。**
+
+`pyproject.toml` 依赖只有 `fastapi / python-multipart / uvicorn`。grep `openai|anthropic|httpx|api_key|client.` 在 `backend/src/` 全无命中。**没有 provider 抽象、没有 HTTP 客户端、没有配置项、没有错误处理路径。**
+
+**断点 4：关键规则只存在于 markdown，代码不拦。**
+
+`main.md` 写「缺少 `primary` 时不得生成 — 应列出待确认问题」。实测：把 case 的 `referenceUsage` 删到只剩 detail + composition，`validate_case` **校验通过**。同样，`case.family` 填任意非空字符串也通过（无枚举约束）。
+
+### 顺带发现的两个技术债
+
+- **`usageSummary` 逻辑重复实现**：`routers.py:77` `_build_usage_summary` 与 `ImagePlansPanel.jsx:23` `buildUsageSummary` 是同一段字符串拼装的两个副本。角色枚举一改就会漂移。
+- **`now_iso()` 是分钟精度**（`db.py:196`），方案排序 `ORDER BY created_at, id` 会在同分钟内落到随机 id 上。`image-plans.md` 的 journey log 自己也记了这条。**等你加运行记录时这会直接咬人**——同一分钟内的多次重跑无法定序。
+
+---
+
+## 二、此前建议的取舍
+
+我逐条重新判了一遍，**有三条我之前的建议在当前仓库是错的**，先认下来：
+
+| 我此前的建议                  | 现在的判断               | 理由                                                         |
+| ----------------------------- | ------------------------ | ------------------------------------------------------------ |
+| 参数化区间 + 理由的设计决策表 | **暂缓，且我收回优先级** | 零出图、零失败案例。现在建表就是空壳，而且**你无法观察一个决策错在哪**——没有对照物。 |
+| 养成器 + 四桶归因             | **本轮明确放弃**         | 同上。没有失败案例可归因。这套东西的完整形态要到有 20+ 真实出图之后。 |
+| 任务包                        | **取消这个名字**         | 仓库里没有这个概念。最近的对应物是 `case.json`，但它是测试夹具，不该背负任务包的语义。 |
+
+保留下来的，按"现在/调整后"分：
+
+**✅ 保留，且是本轮第一优先：模型适配层。**
+
+之前我说这是"最脏最快过期的一层"，读完后我改判了：**这不是提前建设，这是候选方向能否成立的前提。** 因为 `model` 字段是 `"TBD-next-round"`，图片根本没进 messages。在这两件事修好之前，Skill 组装做得再干净也只是"格式正确"。
+
+但**做法的口径要改**：不要建 provider 抽象层。**一个函数 + 一个模型名字符串 + 一个配置文件**就够了。等真的接第二个模型再抽象。现在建抽象层是在给一个不存在的多态性写接口。
+
+**✅ 保留，但定义要改：案例快照。**
+
+我原来的说法是"存 rules 引用"。读代码后我确认这样不够——**`skills/*.md` 是会变的 git 文件**。运行记录如果只存 `rules_version: "HEAD@1221e29"`，事后无法重建当时到底喂了什么。所以快照必须**内联规则正文和输入正文**，不是记指针。这条现在从"建议"变成了"有代码依据的必需"。
+
+**⚙️ 调整：确定性 Prompt 编译。**
+
+`assemble.py` **已经**是确定性组装了，这部分你有了。我说的是"确定性提取"——即把规则里的可判定约束变成代码。目前 `main.md` 里只有一条够格：**「缺少 primary 不得生成」**。我实测它不生效。
+
+所以正确的做法不是"把六族知识都编译成结构化规则"（现在 5/6 族是空的，编译不了），而是**挑这一条最狠的做成代码检查**。这是"不改知识格式"和"不做全面结构化"之间的中间位置。
+
+**⏸ 缺前提：按类目/材质/平台检索。**
+
+现在只有"族"一个轴，而且只在 CLI 层。更关键的是：`products` 表**没有类目字段，没有材质字段**，只有自由文本的 `market`。这条要等这些字段存在才谈得上。我建议这轮**只在 spec 里写明这个依赖关系**，不建任何东西。
+
+**⏸ 暂缓：回归评测。**
+
+前提是真实出图 + 评分，两者都没有。但要在下一轮 spec 里记下 `now_iso()` 分钟精度这个雷。
+
+### 知识如何被 Agent 使用 / 经验如何回流
+
+当前状态：**知识是"整篇塞进 system prompt"，经验是"人工写进一个 .md 文件"。** 两端都没有接口。
+
+我建议的回流路径（下一轮只做前半段）：
+
+```
+方案数据 → 组装请求 → 模型输出 → 运行记录（快照） → 人工出图 → 人工评分
+                                                        ↓
+                                          【下一轮之后】归因 → 提案 → 人工审 → 改 skills/*.md
+```
+
+**本轮请把最后一段（归因→提案）明确留在范围外。** 现在建它一定是空壳。
+
+---
+
+## 三、下一轮可交给开发者的任务
+
+### 目标（一句话）
+
+**让"看图规划"这件事真实发生一次：图片进入模型请求，输出可落库可采纳，并留下可复现的运行记录。范围只限 `main` 族。**
+
+我不建议按你候选方向的完整顺序做（Skill 组装 → 采用到草稿 → 运行记录 → **之后**接生图与评价）。理由：**"之后接评价"这个顺序是反的。** 如果不先收一批真实图，就永远不知道 `main.md` 的规则在真实出图下错在哪，Skill 组装做得再对也只是格式正确。
+
+但也不建议本轮就接生图 API——那会引入计费、超时、重试、失败补偿一整套问题，而你现在需要的是**判断知识对错**，不是**批量出图**。
+
+**建议的解法**：本轮跑通到"落库 + 可采纳"为止，**出图在系统外手动做**（可灵/即梦），人工评分先记在纸上或表格里。下一轮再决定要不要把图和分收进库。
+
+### 逐项任务
+
+---
+
+**T1. `family` 成为方案的一等字段**〔拟新增〕
+
+- **改哪里**：`db.py` `_SCHEMA` 的 `image_plans` 表 + `_migrate`；`schemas.py` 的 `ImagePlanCreate/Update/Out`；`routers.py` `create_image_plan` / `update_image_plan` / `_plan_row_to_out`
+- **复用**：`db.py:82` 的 `_ensure_column(conn, table, col, ddl)` 幂等迁移模式，直接照抄
+- **新增字段**：`family TEXT NOT NULL DEFAULT 'main'`
+- **输入/输出**：`ImagePlanOut.family: str`；创建时省略则取 `main`；`PATCH` 可改
+- **前端**：`ImagePlansPanel.jsx:170` 的硬编码 `imageUsage: '商品主图'` 改为读 `plan.family`；列表新增一个族下拉（**拟新增**，本轮先只放开 `main`，其余五个置灰并标"待实现"，与 `skills/README.md` 的状态表一致）
+- **⚠️ 兼容性注意**：`family` 只能给 `main`，**不要**给 `skills/families/` 里那 5 个空壳族开放创建。`wear.md` 等文件里"设计选择/约束/检查标准"全是"（待实现）"，放开就是让 Agent 拿着一份空规则出图
+- **验收**：
+  1. 旧库启动后 `image_plans` 出现 `family` 列，历史行为 `main`
+  2. `POST` 省略 `family` → 200，输出 `family="main"`
+  3. `POST` 传 `family="scene"` → **422**（本轮不支持）
+  4. 现有 38 个测试全绿（需补 fixture 里 `ImagePlanOut` 的新字段）
+
+---
+
+**T2. 图片真正进入模型请求**〔核心断点，必须做〕
+
+- **改哪里**：`assemble.py` 的 `model_request` 构造段（`:151-157`）
+- **复用**：`_ref_map`（`:44`）已按 `referenceUsage` 顺序产出 `url`，**顺序语义已经对了，直接用**
+- **新增**：`_image_part(row) -> dict`，把本地文件读成模型可接受的图片块（base64 data URL 或 provider 的 file 结构）；在 messages 里用 **content 数组**（`[{"type":"text",...},{"type":"image_url",...}]`）而不是字符串
+- **约束（必须写进 spec）**：
+  - **图片在 API 里的物理顺序必须严格等于 `referenceUsage` 数组顺序**，即 A/B/C 标签的顺序。这两处顺序现在分别在 `_ref_map` 和调用侧维护，很容易漂——建议 `_image_part` 和 `_usage_line` 复用同一个 `ref_rows` 迭代
+  - `url` 是 `/uploads/xxx.jpg` 相对路径，**必须以仓库根为基准解析**（参考 `loader.py:12` 的 `parents[4]`），不能依赖 CWD
+  - **文件缺失要报错，不能静默跳过**。宁可整次调用失败，也不要让模型在缺 A 图的情况下拿到 A 的文字说明——那会产出一个"看起来有依据、实际是编的"方案
+  - `assembly_status.images_resolved`（`:184`）改成**实算**：全部图片成功读入才 `True`，部分成功要单独暴露 `images_missing`
+- **验收**：
+  1. 用 `UPLOAD_DIR` 下真实文件组装，`model_request.messages[1].content` 是数组且图片顺序 = `[A, B, C]`
+  2. 删掉 B 对应文件 → 抛明确错误，错误消息含 `ref-B` 和路径
+  3. `images_resolved` 在真实图片下为 `True`（当前是硬编码 `False`）
+  4. `car-light-main.case.json` 的占位路径仍走原分支，报"测试占位"而不是崩溃
+
+---
+
+**T3. 规划模型调用点**〔拟新增，但不做抽象层〕
+
+- **新增文件**：`backend/src/backend/planner/__init__.py`、`planner/client.py`（**拟新增**）
+- **新增依赖**：`httpx`（**拟新增**，`pyproject.toml`）
+- **职责边界（spec 里要写死）**：
+  - **`planner/client.py` 只做规划**。读商品资料 + 参考图 + 规则 → 输出 `designNotes` / `referenceUsage` 安排 / `prompt` / `openQuestions`
+  - **不接生图**。生图是下一轮的事，且必须是**另一个模块**
+  - **理由（写进 spec）**：如果规划模型和生图模型混在一起，出一张烂图你无法区分是"方案错了"还是"生图模型没听话"——这两个要修的地方完全不同。**这就是四桶归因的最小版本，必须从第一轮就分开，否则后面所有归因都不可靠**
+- **配置**：模型名、base_url、api_key 走环境变量（**拟新增**，用 `os.environ` 读，不引 pydantic-settings）
+- **失败行为**：
+  - 超时 / HTTP 错误 / JSON 解析失败 → 返回结构化失败，**绝不写入半截 prompt**
+  - 方案保持 `draft`，UI 显示错误
+  - **失败也必须落运行记录**（见 T4），否则你不知道它失败在哪个环节
+- **验收**：
+  1. api_key 缺失 → 启动即报明确错误，不等到调用时
+  2. 端点返回 500 → 方案 `prompt` 字段**保持原值不变**，返回 4xx/5xx + 可读原因
+  3. 模型返回非预期 JSON → 报错 + 原始输出存进运行记录的 `raw_output`
+  4. 同一输入连续两次调用，组装出的 system prompt 逐字节相同（确定性回归）
+
+---
+
+**T4. 运行记录**〔拟新增，这是"案例快照"的真身〕
+
+- **新增表** `plan_runs`（**拟新增**）
+
+| 列                 | 类型                            | 说明                                                         |
+| ------------------ | ------------------------------- | ------------------------------------------------------------ |
+| `id`               | TEXT PK                         | `run` + 12 hex                                               |
+| `plan_id`          | TEXT NOT NULL → image_plans(id) | 所属方案                                                     |
+| `status`           | TEXT NOT NULL                   | `success` \| `failed`                                        |
+| `planner_model`    | TEXT NOT NULL                   | 规划模型名。**与生图模型分开记**，下一轮加 `generator_model` |
+| `system_prompt`    | TEXT NOT NULL                   | **正文内联快照**，不记 git 引用                              |
+| `user_prompt`      | TEXT NOT NULL                   | 同上                                                         |
+| `input_ref_ids`    | TEXT NOT NULL                   | `referenceUsage` 顺序的 JSON 快照                            |
+| `rules_snapshot`   | TEXT NOT NULL                   | 已加载规则文件路径 + 各自 sha256                             |
+| `raw_output`       | TEXT                            | 模型原始返回，解析失败时唯一可查的东西                       |
+| `design_notes`     | TEXT                            | 解析后                                                       |
+| `open_questions`   | TEXT                            | JSON 数组                                                    |
+| `generated_prompt` | TEXT                            | 解析后                                                       |
+| `error`            | TEXT                            | 失败原因                                                     |
+| `created_at`       | TEXT NOT NULL                   | —                                                            |
+
+- **⚠️ 必须一并处理**：`db.py:196` `now_iso()` 是**分钟精度**。多张图的生成顺序会乱。**本轮改成秒精度**（`%Y-%m-%d %H:%M:%S`），并在 schema 里排序 `created_at, id`。`image-plans.md` 的 journey log 已经预警过这点，现在踩上去正好
+- **输入/输出**：`GET /api/plans/{planId}/runs` 返回该方案全部运行记录（**拟新增接口**），倒序
+- **验收**：
+  1. 改 `skills/families/main.md` 后重跑，历史 `system_prompt` 内容**不变**（证明是快照不是引用）
+  2. 调用失败也产生一条 `status='failed'` 的记录，`error` 非空，`raw_output` 保留
+  3. 一分钟内连续 3 次运行，`GET /runs` 返回顺序正确
+  4. 确认方案（`confirmed`）后仍可查看其全部运行记录
+
+---
+
+**T5. `designNotes` / `openQuestions` 入库 + 输出可采纳**〔拟新增字段〕
+
+- **改哪里**：`db.py` 加 `design_notes TEXT NOT NULL DEFAULT ''` + `open_questions TEXT NOT NULL DEFAULT '[]'`；`schemas.py` 三个 Plan 模型；`routers.py`
+- **复用**：`assemble.py:197,199` 已经在 `field_mapping` 里预留了这两个名字，`10-io-contract.md` 也已定义好语义（"设计说明" / "待用户确认的问题列表"）。**字段名和语义不用重新设计，照契约来**
+- **采纳流程**（**拟新增**）：
+  - 「AI 生成方案」按钮 → 调 T3 → 拿到结构化输出 → **写入 `plan_runs`，不直接改方案**
+  - 方案页展示这次运行的 `designNotes` / `openQuestions` / `generatedPrompt`
+  - 用户点「采纳为草稿」→ 才把 `designNotes` / `openQuestions` / `prompt` 写进方案
+  - **绝不自动确认**。AI 产出永远先进草稿
+- **`openQuestions` 非空时的行为**：显示警示，但**不阻断采纳**。复制 `ImagePlansPanel.jsx:134-138` 已有的 `isRiskyRef` 提示样式。别做成硬拦截——用户经常知道答案只是想让你先出图，硬拦会很烦。**这条和"缺少 primary 不得生成"要区别对待**：前者是硬约束，后者是提示
+- **验收**：
+  1. AI 生成后方案的 `status` 仍是 `draft`
+  2. 不点采纳，`plan.prompt` 保持用户原值
+  3. 采纳后 `designNotes`/`openQuestions` 落库，刷新和重启后仍可读
+  4. `openQuestions` 非空时 UI 有提示但不阻止保存
+
+---
+
+**T6. 「基于此方案再生成」**〔拟新增按钮，评估闭环的前提〕
+
+- **现状核实**：`basedOnPlanId` 字段、`create_image_plan` 的跨商品校验（`routers.py:706-712`）**都在**，但前端 `PlanEditor.saveDraft`（`:167-179`）的 body 里**没有这个字段，列表页也没有复制按钮**
+- **拟新增**：列表页每个已确认方案旁一个「基于此生成新草稿」→ `POST /products/{id}/plans` 带 `basedOnPlanId` + 复制 `name`/`family`/`drawingRequest`/`referenceUsage`
+- **为什么现在做**：已确认方案是不可变的（`update_image_plan` 409）。**你需要"同一个 prompt 改了规则之后再跑一次"来对比效果**，这个血缘指针是唯一的载体。不做这个，评估闭环断在这里
+- **验收**：从已确认方案复制出新草稿，`basedOnPlanId` 正确指向来源，两者 `status` 分别为 `confirmed` / `draft`，复制后修改新草稿**不影响**原方案
+
+---
+
+**本轮明确不做**：养成器、四桶归因、回归集自动跑、另外五族、类目/材质/平台知识轴、生图 API 接入、知识格式全面结构化迁移。
+
+---
+
+## 四、完成后的后续两步
+
+### 第一步：用真实图片判断知识有没有价值（不做自动化）
+
+进入条件（本轮全部完成 + 验收通过）：`main` 族方案能真实调出规划模型，输出能落库能采纳。
+
+**具体做法**：
+
+1. **选 8–12 个商品，覆盖材质差异**。至少要有：金属（反光强）、塑料/哑光（吃光）、透明或半透明（边缘难处理）、深色（暗部糊）、多部件带线束（结构易幻觉）。**别只挑最好做的**——你现在只有一个车灯案例，它恰好是金属+浅色+结构清晰，是最不需要经验就能出活的一类。
+2. **每个商品准备 2–3 张参考图**，按现有 `referenceUsage` 配好角色。
+3. **出图在系统外手动做**。把 `prompt` 复制到可灵/即梦/SD，参数固定。
+4. **人工评分，只记三个数**：
+   - 商品是否准确（结构/部件数/颜色/logo 有没有跑偏）
+   - 任务是否完成（主图该说清的说清了吗）
+   - 返工几次才可用
+
+**这一步的真正产出不是分数，是一份失败清单。** 每一张不合格的图，你要写下它错在哪——这才是后面归因的原料。
+
+**一个纪律**：不要用"跑通了一次"当结论。你现在最需要的恰恰是**失败样本密度**。如果 10 张图里有 8 张能用，恭喜，但你的知识体系还什么也没学到；如果只有 3 张能用，你学到了 7 件事。**第二种情况对你更有价值。**
+
+**进入第二步的条件**：至少有 6 条具体的、可复述的失败描述，且能对应到 `main.md` 或 `common/` 里的某条规则或某个缺失。达不到就继续攒，不要开始建养成器。
+
+### 第二步：建设养成器（但只建四分之一）
+
+进入条件：失败清单成型，且你已经能看出**失败是"知识错了"还是"模型没听话"**。
+
+**先建的部分**：
+
+1. **失败记录进案例**。给 `skills/cases/` 定一个 schema：`(商品属性, 族, 决策, 最终 prompt, 结果图, 评分, 失败类型, 证据)`。注意——**现在 `car-light-main.sample.md` 是"人工编写的理想输出"，不是"案例"**。它没有绑定任何一次运行，没有失败，没有分数。**它是设计意图文档，不是经验。** 真正的案例必须来自 `plan_runs`。
+2. **只做四桶归因，不做自动化**。人工判定每个失败属于：知识错缺 / 未检索到 / 模型不听话 / 转译丢失。**记录判定结果，不写代码。**
+3. **看一个指标**：`bucket 3+4` 占比应该随时间下降，`bucket 1` 先升后降。如果 `bucket 3` 一直高，说明瓶颈在 prompt 结构和转译，**加多少规则都没用**。
+
+**明确不做的**：自动提案、自动改规则、自动回归、规则退役机制。这些等你已经有 20+ 案例、并且真的被重复劳动逼到过，才值得建。
+
+**退役机制现在提一句**：等案例超过 30 条，记录每条规则的"被调用次数"和"被修正次数"。调用很多次但从不需要修正的、或者总被方案覆盖的，**都要准备删**。知识库只增不减的话，第二个年你就没人敢动它了。这一点几乎所有人都会踩。
+
+---
+
+## 收尾
+
+**你现有资产比我预期的多，不要动它们。** 三个设计我认为是对的，值得明确保留：
+
+1. **参考图身份与顺序分离**——`refImageId` 稳定、A/B/C 只是按数组位置派生的展示标签，文字说明和图片输入共用同一个 `ref_rows` 迭代。这套语义是干净的，**T2 直接复用它，不要重写**。
+2. **`attrs_migrated` 哨兵**（`db.py:101`）——用标记位而不是列默认值来防止迁移覆盖用户写入。这个思路比代码本身更值钱。
+3. **`main.md` 的"结构必须有依据"和 sample 里的「已删除的无依据细节」清单**（透明灯罩、黑色接头）——**这是负向知识，比正向规则更值钱，而且已经在你的仓库里了。** 养成器建成之后，每条失败都该能落成同样形式的"已删除的无依据细节"。
+
+**六族不用重构，知识格式不用迁移。** 5/6 族是空壳不是问题——那是"还没写"，不是"写错了"。等有了失败清单再填，填的时候你会知道该填什么。现在迁移 Markdown 到结构化格式，是把一个还没成形的东西提前定型。
+
+**至于你候选方向里的顺序**，我唯一的实质反对是「之后再接实际生图与评价」这个排期。**评价要提到出图前面，哪怕先手工。** 其余（family 落库 → 图片进请求 → 输出落库可采纳 → 运行记录）我完全同意，就是上面 T1–T6 的顺序。
+
+---
+
+要我把 T1–T6 写成一份可以直接交给开发者的 spec（含每个任务的验收命令和 fixture 补充清单）吗？或者你想先看 T2 的图片组装具体长什么样——那段是唯一有技术不确定性的地方，值得先定下来。

@@ -56,12 +56,36 @@ CREATE TABLE IF NOT EXISTS image_plans (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     confirmed_at TEXT,
-    reference_usage TEXT NOT NULL DEFAULT '[]'
+    reference_usage TEXT NOT NULL DEFAULT '[]',
+    family TEXT NOT NULL DEFAULT 'main',
+    design_notes TEXT NOT NULL DEFAULT '',
+    open_questions TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_folder ON products(folder_id);
 CREATE INDEX IF NOT EXISTS idx_refs_product ON ref_images(product_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_image_plans_product ON image_plans(product_id, created_at);
+
+CREATE TABLE IF NOT EXISTS plan_runs (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL REFERENCES image_plans(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    planner_model TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    user_prompt TEXT NOT NULL DEFAULT '',
+    input_ref_ids TEXT NOT NULL DEFAULT '[]',
+    rules_snapshot TEXT NOT NULL DEFAULT '[]',
+    raw_output TEXT,
+    design_notes TEXT,
+    open_questions TEXT,
+    generated_prompt TEXT,
+    ref_usage_notes TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    adopted_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_runs_plan ON plan_runs(plan_id, created_at, id);
 """
 
 
@@ -100,6 +124,9 @@ def _migrate(conn) -> None:
     # 1 = product_relation/ai_status are intentional (user-saved or already migrated).
     _ensure_column(conn, "ref_images", "attrs_migrated", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "image_plans", "reference_usage", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(conn, "image_plans", "family", "TEXT NOT NULL DEFAULT 'main'")
+    _ensure_column(conn, "image_plans", "design_notes", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "image_plans", "open_questions", "TEXT NOT NULL DEFAULT '[]'")
 
     rows = conn.execute(
         """
@@ -193,7 +220,7 @@ def connect():
 
 
 def now_iso() -> str:
-    return datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M")
+    return datetime.now(UTC).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def new_id(prefix: str) -> str:

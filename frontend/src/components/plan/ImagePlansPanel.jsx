@@ -3,11 +3,13 @@ import {
   AlertCircle,
   CheckCircle2,
   ChevronLeft,
+  Copy,
   FileText,
   Image as ImageIcon,
   ImagePlus,
   Plus,
   Save,
+  Sparkles,
   X,
 } from 'lucide-react'
 import Button from '../ui/Button.jsx'
@@ -57,6 +59,15 @@ const ROLE_SUGGESTIONS = {
   style: { useFor: '背景光线与氛围', ignore: '具体商品细节' },
 }
 
+const FAMILY_OPTIONS = [
+  { value: 'main', label: '主图 main', enabled: true },
+  { value: 'wear', label: '穿搭 wear', enabled: false },
+  { value: 'handheld', label: '手持 handheld', enabled: false },
+  { value: 'scene', label: '场景 scene', enabled: false },
+  { value: 'texture', label: '质感 texture', enabled: false },
+  { value: 'compare', label: '对比 compare', enabled: false },
+]
+
 function PlanEditor({
   productId,
   references,
@@ -67,19 +78,30 @@ function PlanEditor({
   readOnly,
 }) {
   const [name, setName] = useState(plan?.name || '主图方案 1')
+  const [family, setFamily] = useState(plan?.family || 'main')
   const [drawingRequest, setDrawingRequest] = useState(plan?.drawingRequest || '')
   const [prompt, setPrompt] = useState(plan?.prompt || '')
+  const [designNotes, setDesignNotes] = useState(plan?.designNotes || '')
+  const [openQuestions, setOpenQuestions] = useState(plan?.openQuestions || [])
   const [usage, setUsage] = useState(plan?.referenceUsage || [])
   const [saveError, setSaveError] = useState('')
   const [notice, setNotice] = useState('')
   const [saving, setSaving] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [adopting, setAdopting] = useState(false)
+  const [runResult, setRunResult] = useState(null)
+  const [currentPlanId, setCurrentPlanId] = useState(plan?.id || null)
 
   useEffect(() => {
     if (plan) {
       setName(plan.name || '主图方案 1')
+      setFamily(plan.family || 'main')
       setDrawingRequest(plan.drawingRequest || '')
       setPrompt(plan.prompt || '')
+      setDesignNotes(plan.designNotes || '')
+      setOpenQuestions(plan.openQuestions || [])
       setUsage(plan.referenceUsage || [])
+      setCurrentPlanId(plan.id)
     }
   }, [plan])
 
@@ -167,7 +189,8 @@ function PlanEditor({
   const saveDraft = async () => {
     const body = {
       name: name.trim() || '主图方案 1',
-      imageUsage: '商品主图',
+      family,
+      imageUsage: plan?.imageUsage || '商品主图',
       drawingRequest,
       prompt,
       referenceUsage: usage,
@@ -183,11 +206,51 @@ function PlanEditor({
     setSaveError('')
     try {
       const saved = await saveDraft()
+      setCurrentPlanId(saved.id)
       onSaved(saved)
     } catch (e) {
       setSaveError(e.message || '保存失败，输入已保留')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSkillRun = async () => {
+    setSaveError('')
+    setRunning(true)
+    try {
+      let pid = currentPlanId
+      if (!pid) {
+        const saved = await saveDraft()
+        pid = saved.id
+        setCurrentPlanId(saved.id)
+      }
+      const run = await api.skillRunPlan(pid)
+      setRunResult(run)
+      if (run.status === 'failed') {
+        setSaveError(run.error || 'AI 生成失败，草稿未改动')
+      }
+    } catch (e) {
+      setSaveError(e.message || 'AI 生成失败，草稿未改动')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const handleAdopt = async () => {
+    if (!runResult || runResult.status !== 'success' || !currentPlanId) return
+    setAdopting(true)
+    setSaveError('')
+    try {
+      const saved = await api.adoptPlanRun(currentPlanId, runResult.id)
+      setPrompt(saved.prompt)
+      setDesignNotes(saved.designNotes || '')
+      setOpenQuestions(saved.openQuestions || [])
+      setNotice('已采纳到草稿，可继续手工修改后再确认。')
+    } catch (e) {
+      setSaveError(e.message || '采纳失败')
+    } finally {
+      setAdopting(false)
     }
   }
 
@@ -223,7 +286,7 @@ function PlanEditor({
             <ChevronLeft className="w-4 h-4" />
           </button>
           <h3 className="m-0 text-[13px] font-semibold text-[var(--text-1)]">
-            {readOnly ? '查看已确认方案' : isNew ? '新建主图方案' : '编辑方案'}
+            {readOnly ? '查看已确认方案' : isNew ? '新建方案' : '编辑方案'}
           </h3>
           {plan?.status === 'confirmed' && <Badge type="success">已确认</Badge>}
           {plan?.status === 'draft' && !isNew && <Badge>草稿</Badge>}
@@ -236,6 +299,10 @@ function PlanEditor({
             <Button size="sm" variant="secondary" onClick={handleSave} loading={saving}>
               <Save className="w-3.5 h-3.5" />
               保存草稿
+            </Button>
+            <Button size="sm" variant="secondary" onClick={handleSkillRun} loading={running}>
+              <Sparkles className="w-3.5 h-3.5" />
+              AI 生成方案
             </Button>
             <Button size="sm" onClick={handleConfirm} loading={saving}>
               <CheckCircle2 className="w-3.5 h-3.5" />
@@ -256,16 +323,36 @@ function PlanEditor({
           </div>
         )}
 
-        <div className="mb-3">
-          <label className="mb-1 block text-[12.5px] font-semibold text-[var(--text-1)]">
-            方案名称
-          </label>
-          <input
-            className="field-input"
-            value={name}
-            disabled={readOnly}
-            onChange={(e) => setName(e.target.value)}
-          />
+        <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-[12.5px] font-semibold text-[var(--text-1)]">
+              方案名称
+            </label>
+            <input
+              className="field-input"
+              value={name}
+              disabled={readOnly}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-[12.5px] font-semibold text-[var(--text-1)]">
+              方案族 family
+            </label>
+            <select
+              className="field-input"
+              value={family}
+              disabled={readOnly}
+              onChange={(e) => setFamily(e.target.value)}
+            >
+              {FAMILY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value} disabled={!opt.enabled}>
+                  {opt.label}
+                  {opt.enabled ? '' : '（待实现）'}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -458,6 +545,88 @@ function PlanEditor({
           </p>
         </div>
 
+        {(runResult || designNotes || (openQuestions?.length > 0)) && (
+          <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border-whisper)] bg-[var(--bg-surface)] p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <h4 className="m-0 text-[12px] font-semibold text-[var(--text-1)]">
+                  AI 生成结果
+                </h4>
+                {runResult && (
+                  <Badge type={runResult.status === 'success' ? 'success' : 'error'}>
+                    {runResult.status === 'success' ? '成功' : '失败'}
+                  </Badge>
+                )}
+              </div>
+              {!readOnly && runResult?.status === 'success' && !runResult.adoptedAt && (
+                <Button size="sm" onClick={handleAdopt} loading={adopting}>
+                  采纳到草稿
+                </Button>
+              )}
+            </div>
+
+            {runResult?.status === 'failed' && (
+              <p role="alert" className="field-error m-0 mb-2">
+                {runResult.error || '生成失败'}
+              </p>
+            )}
+
+            {(openQuestions?.length > 0 || (runResult?.openQuestions?.length > 0 && !designNotes)) && (
+              <div className="mb-2 rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--warning)_25%,transparent)] bg-[var(--warning-soft)] p-2.5">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 w-3.5 h-3.5 shrink-0 text-[var(--warning)]" />
+                  <div className="flex-1">
+                    <p className="m-0 text-[11.5px] font-semibold text-[var(--warning)]">
+                      待确认问题（不阻断采纳）
+                    </p>
+                    <ul className="m-0 mt-1 list-disc pl-4 text-[11.5px] text-[var(--warning)]">
+                      {(openQuestions?.length ? openQuestions : runResult?.openQuestions || []).map(
+                        (q, i) => (
+                          <li key={i}>{q}</li>
+                        ),
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {(designNotes || runResult?.designNotes) && (
+              <div className="mb-2">
+                <p className="m-0 mb-0.5 text-[11px] font-semibold text-[var(--text-3)]">
+                  设计说明
+                </p>
+                <p className="m-0 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-2)]">
+                  {designNotes || runResult?.designNotes}
+                </p>
+              </div>
+            )}
+
+            {runResult?.refUsageNotes && (
+              <div className="mb-2">
+                <p className="m-0 mb-0.5 text-[11px] font-semibold text-[var(--text-3)]">
+                  参考图使用说明
+                </p>
+                <p className="m-0 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-2)]">
+                  {runResult.refUsageNotes}
+                </p>
+              </div>
+            )}
+
+            {runResult?.generatedPrompt && (
+              <div>
+                <p className="m-0 mb-0.5 text-[11px] font-semibold text-[var(--text-3)]">
+                  生成的提示词
+                </p>
+                <p className="m-0 whitespace-pre-wrap rounded-[var(--radius-sm)] bg-[var(--bg-subtle)] p-2 text-[12px] leading-relaxed text-[var(--text-2)]">
+                  {runResult.generatedPrompt}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {saveError && (
           <p role="alert" className="field-error mt-3">
             {saveError}
@@ -508,6 +677,17 @@ export default function ImagePlansPanel({ productId, references, onOpenReference
     )
   }
 
+  const handleCopyFrom = async (sourcePlan) => {
+    setError('')
+    try {
+      const created = await api.createPlanFrom(productId, sourcePlan)
+      setEditing({ mode: 'edit', plan: created })
+      load()
+    } catch (e) {
+      setError(e.message || '复制失败')
+    }
+  }
+
   return (
     <div className="h-full overflow-y-auto p-5 lg:p-6">
       <div className="mb-3 flex items-center justify-between">
@@ -519,7 +699,7 @@ export default function ImagePlansPanel({ productId, references, onOpenReference
         </h2>
         <Button size="sm" onClick={() => setEditing({ mode: 'new' })}>
           <Plus className="w-3.5 h-3.5" />
-          新建主图方案
+          新建方案
         </Button>
       </div>
 
@@ -535,16 +715,16 @@ export default function ImagePlansPanel({ productId, references, onOpenReference
         <EmptyState
           icon={<ImageIcon className="w-8 h-8" />}
           title="还没有图片方案"
-          desc="新建主图方案，选用参考图并配置本次角色。"
+          desc="新建方案，选用参考图并配置本次角色。"
           action={{
-            label: '新建主图方案',
+            label: '新建方案',
             onClick: () => setEditing({ mode: 'new' }),
           }}
         />
       ) : (
         <ul className="m-0 list-none space-y-2 p-0">
           {plans.map((plan) => (
-            <li key={plan.id}>
+            <li key={plan.id} className="flex items-stretch gap-2">
               <button
                 type="button"
                 onClick={() =>
@@ -554,18 +734,20 @@ export default function ImagePlansPanel({ productId, references, onOpenReference
                       : { mode: 'edit', plan },
                   )
                 }
-                className="flex w-full items-center justify-between rounded-[var(--radius-md)] border border-[var(--border-whisper)] bg-[var(--bg-raised)] px-3.5 py-3 text-left hover:border-[var(--border-quiet)]"
+                className="flex flex-1 items-center justify-between rounded-[var(--radius-md)] border border-[var(--border-whisper)] bg-[var(--bg-raised)] px-3.5 py-3 text-left hover:border-[var(--border-quiet)]"
               >
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="text-[13px] font-medium text-[var(--text-1)]">
                       {plan.name}
                     </span>
+                    <Badge>{plan.family || 'main'}</Badge>
                     {plan.status === 'confirmed' ? (
                       <Badge type="success">已确认</Badge>
                     ) : (
                       <Badge>草稿</Badge>
                     )}
+                    {plan.basedOnPlanId && <Badge>副本</Badge>}
                   </div>
                   <p className="m-0 mt-0.5 text-[11px] text-[var(--text-3)]">
                     {plan.refImageIds?.length || 0} 张参考图
@@ -576,6 +758,17 @@ export default function ImagePlansPanel({ productId, references, onOpenReference
                   {plan.status === 'confirmed' ? '查看' : '继续编辑'}
                 </span>
               </button>
+              {plan.status === 'confirmed' && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => handleCopyFrom(plan)}
+                  title="基于此方案再生成新草稿"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  复制草稿
+                </Button>
+              )}
             </li>
           ))}
         </ul>

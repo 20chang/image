@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any
 
-from .loader import SkillPreviewError, load_case, load_rules
+from .loader import REPO_ROOT, SkillPreviewError, load_case, load_rules
+
+try:
+    from backend import db as _db
+except ImportError:  # pragma: no cover - CLI without db side effects
+    _db = None
 
 ROLE_LABELS = {
     "primary": "主体依据",
@@ -27,18 +35,65 @@ AI_LABELS = {
     "unknown": "不确定",
 }
 
+_UPLOAD_PREFIX = "/uploads/"
+_FIXTURE_PREFIXES = ("/static/fixtures/", "fixture:")
+
 
 def _ref_label(index: int) -> str:
     return chr(ord("A") + index)
+
+
+def _is_placeholder(url: str) -> bool:
+    return not url or url.startswith(_FIXTURE_PREFIXES)
 
 
 def _image_status(url: str) -> str:
     """测试占位与真实图片路径的展示状态。"""
     if not url:
         return "未提供地址"
-    if url.startswith(("/static/fixtures/", "fixture:")):
+    if _is_placeholder(url):
         return "测试占位（未提供真实图片）"
     return "已提供地址（图片内容待解析）"
+
+
+def _resolve_local_path(url: str) -> Path | None:
+    """把 /uploads/… 解析为本地文件；其余地址不解析。"""
+    if _is_placeholder(url):
+        return None
+    if url.startswith(_UPLOAD_PREFIX):
+        upload_dir = (
+            Path(_db.UPLOAD_DIR)
+            if _db is not None
+            else REPO_ROOT / "backend" / "data" / "uploads"
+        )
+        return upload_dir / url[len(_UPLOAD_PREFIX) :]
+    if url.startswith("file://"):
+        return Path(url[7:])
+    return None
+
+
+def _image_data_url(path: Path) -> str:
+    suffix = path.suffix.lower() or ".png"
+    mime = mimetypes.types_map.get(suffix, "image/png")
+    data = path.read_bytes()
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _image_part(row: dict[str, Any]) -> dict[str, Any] | None:
+    """读取真实图片为 image_url 块；占位或外部地址返回 None。"""
+    url = row["url"] or ""
+    path = _resolve_local_path(url)
+    if path is None:
+        return None
+    if not path.is_file():
+        raise SkillPreviewError(
+            f"参考图文件不存在: refImageId={row['refImageId']!r} "
+            f"url={url!r} 解析路径={path}"
+        )
+    return {
+        "type": "image_url",
+        "image_url": {"url": _image_data_url(path)},
+    }
 
 
 def _ref_map(case: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,10 +160,9 @@ def _image_line(row: dict[str, Any]) -> str:
     )
 
 
-def assemble_request(family: str, case_path: str) -> dict[str, Any]:
-    """加载规则与 case，组装模型请求与预览元数据。"""
+def assemble_from_case(family: str, case: dict[str, Any]) -> dict[str, Any]:
+    """加载规则并按 case dict 组装模型请求（夹具与库数据同构入口）。"""
     rules = load_rules(family)
-    case = load_case(case_path)
 
     if case.get("family") and case["family"] != family:
         raise SkillPreviewError(
@@ -122,6 +176,19 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
     system_parts = [body for _, body in rules["common"]]
     system_parts.append(rules["family_doc"][1])
     system_prompt = "\n\n---\n\n".join(system_parts)
+
+    image_parts: list[dict[str, Any]] = []
+    images_missing: list[str] = []
+    for row in ref_rows:
+        part = _image_part(row)
+        if part is not None:
+            image_parts.append(part)
+            row["imageStatus"] = "已解析图片（像素已入请求）"
+
+    local_rows = [
+        r for r in ref_rows if _resolve_local_path(r["url"] or "") is not None
+    ]
+    images_resolved = bool(local_rows) and len(image_parts) == len(local_rows)
 
     # 文字说明与图片输入都按 referenceUsage 顺序（=使用顺序）
     usage_lines = [_usage_line(row) for row in ref_rows]
@@ -141,18 +208,26 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
         + "\n\n## 参考图图片输入（顺序=使用顺序，与上表一一对应）\n"
         + "\n".join(f"- {line}" for line in image_lines)
         + "\n\n## 组装状态\n"
-        "- 已组装：规则文本、商品资料、方案字段、参考图文字说明与图片输入清单。\n"
-        "- 待适配：图片像素内容尚未解析（当前无模型提供者）；上表「来源」是路径文本，"
-        "不代表模型已收到图片。\n"
-        "- 未执行：模型调用、图片生成。\n\n"
+        + (
+            "- 已组装：规则文本、商品资料、方案字段、参考图文字说明；图片像素已随请求传入。\n"
+            if images_resolved
+            else "- 已组装：规则文本、商品资料、方案字段、参考图文字说明与图片输入清单。\n"
+            "- 待适配：图片像素内容尚未解析（当前无模型提供者）；上表「来源」是路径文本，"
+            "不代表模型已收到图片。\n"
+        )
+        + "- 未执行：模型调用、图片生成。\n\n"
         "请输出：设计说明、参考图使用安排、生图提示词、待确认问题。"
     )
+
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+    # 图片物理顺序严格等于 referenceUsage 顺序（A/B/C）
+    user_content.extend(image_parts)
 
     model_request = {
         "model": "TBD-next-round",
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ],
     }
 
@@ -181,10 +256,16 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
         "assembly_status": {
             "rules_loaded": True,
             "request_assembled": True,
-            "images_resolved": False,
+            "images_resolved": images_resolved,
+            "images_missing": images_missing,
+            "image_parts": len(image_parts),
             "model_called": False,
             "image_generated": False,
-            "note": "图片路径为文本清单，像素内容待模型提供者适配后解析。",
+            "note": (
+                "全部本地参考图像素已进入 messages。"
+                if images_resolved
+                else "图片路径为文本清单或占位，像素内容待模型提供者适配后解析。"
+            ),
         },
         "field_mapping": {
             "product.name/market/facts": "user_prompt §商品资料",
@@ -192,7 +273,7 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
             "plan.drawingRequest": "user_prompt §方案（原文保留）",
             "referenceUsage[]": "user_prompt §参考图文字说明 + §参考图图片输入",
             "ReferenceOut.desc": "user_prompt §参考图文字说明（备注）",
-            "ReferenceOut.url": "user_prompt §参考图图片输入（来源）",
+            "ReferenceOut.url": "user_prompt §参考图图片输入（来源）+ messages 图片段",
             "参考图身份 refImageId": "ref_order / image_inputs，顺序一致",
             "designNotes": "建议输出，本轮不入库",
             "usageSummary / prompt": "已有 image_plans 列",
@@ -202,5 +283,16 @@ def assemble_request(family: str, case_path: str) -> dict[str, Any]:
             "designNotes 尚未写入 image_plans",
             "openQuestions 尚未写入 image_plans",
             "图片像素内容尚未解析（无模型提供者）",
+        ]
+        if not images_resolved
+        else [
+            "designNotes 尚未写入 image_plans",
+            "openQuestions 尚未写入 image_plans",
         ],
     }
+
+
+def assemble_request(family: str, case_path: str) -> dict[str, Any]:
+    """加载规则与 case，组装模型请求与预览元数据。"""
+    case = load_case(case_path)
+    return assemble_from_case(family, case)

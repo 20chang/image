@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -8,14 +9,17 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi import Path as PathParam
 
 from .db import UPLOAD_DIR, connect, now_iso
+from .planner import PlannerError, load_config, parse_plan_output, run_planner
 from .schemas import (
     PLAN_ROLES,
+    AdoptRunRequest,
     FolderCreate,
     FolderOut,
     FolderUpdate,
     ImagePlanCreate,
     ImagePlanOut,
     ImagePlanUpdate,
+    PlanRunOut,
     ProductCreate,
     ProductMove,
     ProductOut,
@@ -25,6 +29,8 @@ from .schemas import (
     ReferenceReorder,
     ReferenceUsageItem,
 )
+from .skill_preview.assemble import assemble_from_case
+from .skill_preview.loader import load_plan_case
 
 router = APIRouter(prefix="/api")
 
@@ -131,7 +137,20 @@ def _plan_row_to_out(row) -> ImagePlanOut:
         confirmedAt=row["confirmed_at"],
         referenceUsage=items,
         usageSummary=_build_usage_summary(usage),
+        family=row["family"] or "main",
+        designNotes=row["design_notes"] or "",
+        openQuestions=_json_str_list(row["open_questions"]),
     )
+
+
+def _json_str_list(raw: str | None) -> list[str]:
+    try:
+        data = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(x) for x in data]
 
 
 def _require_plan_ref_ids(conn, product_id: str, ref_image_ids: list[str]) -> None:
@@ -196,6 +215,19 @@ def _normalize_usage(
 
 def _usage_to_ids(usage: list[dict]) -> list[str]:
     return [u["refImageId"] for u in usage]
+
+
+ALLOWED_PLAN_FAMILIES = {"main"}
+
+
+def _require_supported_family(family: str) -> str:
+    value = (family or "").strip()
+    if value not in ALLOWED_PLAN_FAMILIES:
+        raise HTTPException(
+            422,
+            f"unsupported family: {value!r}; only {sorted(ALLOWED_PLAN_FAMILIES)} this round",
+        )
+    return value
 
 
 def _skeleton_usage(ref_image_ids: list[str]) -> list[dict]:
@@ -683,6 +715,7 @@ def create_image_plan(
     name = body.name.strip()
     if not name:
         raise HTTPException(422, "plan name required")
+    family = _require_supported_family(body.family)
     with connect() as conn:
         product = conn.execute(
             "SELECT id FROM products WHERE id = ?", (product_id,)
@@ -717,8 +750,9 @@ def create_image_plan(
             INSERT INTO image_plans (
                 id, product_id, name, image_usage, ref_image_ids,
                 drawing_request, prompt, status, based_on_plan_id,
-                created_at, updated_at, confirmed_at, reference_usage
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL, ?)
+                created_at, updated_at, confirmed_at, reference_usage,
+                family, design_notes, open_questions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, NULL, ?, ?, ?, ?)
             """,
             (
                 plan_id,
@@ -732,6 +766,9 @@ def create_image_plan(
                 ts,
                 ts,
                 json.dumps(usage, ensure_ascii=False),
+                family,
+                body.designNotes,
+                json.dumps(body.openQuestions, ensure_ascii=False),
             ),
         )
         row = conn.execute(
@@ -756,6 +793,11 @@ def update_image_plan(
         if not name:
             raise HTTPException(422, "plan name required")
         image_usage = row["image_usage"] if body.imageUsage is None else body.imageUsage
+        family = (
+            (row["family"] or "main")
+            if body.family is None
+            else _require_supported_family(body.family)
+        )
         if body.referenceUsage is not None:
             usage = _normalize_usage(conn, row["product_id"], body.referenceUsage)
             ref_image_ids = _usage_to_ids(usage)
@@ -777,7 +819,7 @@ def update_image_plan(
             UPDATE image_plans
             SET name = ?, image_usage = ?, ref_image_ids = ?,
                 drawing_request = ?, prompt = ?, updated_at = ?,
-                reference_usage = ?
+                reference_usage = ?, family = ?
             WHERE id = ?
             """,
             (
@@ -788,6 +830,7 @@ def update_image_plan(
                 prompt,
                 now_iso(),
                 json.dumps(usage, ensure_ascii=False),
+                family,
                 plan_id,
             ),
         )
@@ -822,6 +865,241 @@ def confirm_image_plan(plan_id: str = PathParam()) -> ImagePlanOut:
             WHERE id = ?
             """,
             (ts, ts, plan_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        return _plan_row_to_out(row)
+
+
+# ---------- 规划运行记录 / skill-run / adopt ----------
+
+
+def _rules_snapshot(loaded_paths: list[str]) -> list[dict[str, str]]:
+    snapshot: list[dict[str, str]] = []
+    for p in loaded_paths:
+        path = Path(p)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+        snapshot.append({"path": str(path), "sha256": digest})
+    return snapshot
+
+
+def _run_row_to_out(row) -> PlanRunOut:
+    return PlanRunOut(
+        id=row["id"],
+        planId=row["plan_id"],
+        status=row["status"],
+        plannerModel=row["planner_model"] or "",
+        systemPrompt=row["system_prompt"] or "",
+        userPrompt=row["user_prompt"] or "",
+        inputRefIds=_json_str_list(row["input_ref_ids"]),
+        rulesSnapshot=_usage_items(row["rules_snapshot"]),
+        rawOutput=row["raw_output"],
+        designNotes=row["design_notes"],
+        openQuestions=_json_str_list(row["open_questions"] or "[]"),
+        generatedPrompt=row["generated_prompt"],
+        refUsageNotes=row["ref_usage_notes"],
+        error=row["error"],
+        createdAt=row["created_at"],
+        adoptedAt=row["adopted_at"],
+    )
+
+
+def _insert_plan_run(
+    conn,
+    *,
+    plan_id: str,
+    status: str,
+    planner_model: str,
+    system_prompt: str = "",
+    user_prompt: str = "",
+    input_ref_ids: list[str] | None = None,
+    rules_snapshot: list[dict] | None = None,
+    raw_output: str | None = None,
+    design_notes: str | None = None,
+    open_questions: list[str] | None = None,
+    generated_prompt: str | None = None,
+    ref_usage_notes: str | None = None,
+    error: str | None = None,
+) -> str:
+    run_id = _new_id("run")
+    conn.execute(
+        """
+        INSERT INTO plan_runs (
+            id, plan_id, status, planner_model, system_prompt, user_prompt,
+            input_ref_ids, rules_snapshot, raw_output, design_notes,
+            open_questions, generated_prompt, ref_usage_notes, error,
+            created_at, adopted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            run_id,
+            plan_id,
+            status,
+            planner_model,
+            system_prompt,
+            user_prompt,
+            json.dumps(input_ref_ids or [], ensure_ascii=False),
+            json.dumps(rules_snapshot or [], ensure_ascii=False),
+            raw_output,
+            design_notes,
+            json.dumps(open_questions or [], ensure_ascii=False),
+            generated_prompt,
+            ref_usage_notes,
+            error,
+            now_iso(),
+        ),
+    )
+    return run_id
+
+
+def _get_run(conn, run_id: str):
+    return conn.execute("SELECT * FROM plan_runs WHERE id = ?", (run_id,)).fetchone()
+
+
+@router.get("/plans/{plan_id}/runs", response_model=list[PlanRunOut])
+def list_plan_runs(plan_id: str = PathParam()) -> list[PlanRunOut]:
+    with connect() as conn:
+        plan = conn.execute(
+            "SELECT id FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not plan:
+            raise HTTPException(404, "plan not found")
+        rows = conn.execute(
+            "SELECT * FROM plan_runs WHERE plan_id = ? ORDER BY created_at DESC, id DESC",
+            (plan_id,),
+        ).fetchall()
+        return [_run_row_to_out(r) for r in rows]
+
+
+@router.post("/plans/{plan_id}/skill-run", response_model=PlanRunOut)
+def skill_run(plan_id: str = PathParam()) -> PlanRunOut:
+    with connect() as conn:
+        plan = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not plan:
+            raise HTTPException(404, "plan not found")
+        if plan["status"] != "draft":
+            raise HTTPException(409, "only draft plans can run skill")
+
+        usage = _usage_items(plan["reference_usage"])
+        has_primary = any("primary" in (u.get("roles") or []) for u in usage)
+        if (plan["family"] or "main") == "main" and not has_primary:
+            missing = [u.get("refImageId", "") for u in usage if not u.get("roles")]
+            run_id = _insert_plan_run(
+                conn,
+                plan_id=plan_id,
+                status="failed",
+                planner_model="",
+                error="missing_primary: main 族需要 primary 参考图"
+                + (f"；未标角色: {', '.join(missing)}" if missing else ""),
+            )
+            row = _get_run(conn, run_id)
+            return _run_row_to_out(row)
+
+        try:
+            case = load_plan_case(conn, plan_id)
+            assembled = assemble_from_case(plan["family"] or "main", case)
+        except Exception as exc:  # noqa: BLE001 - 落失败 run 再返回可读错误
+            run_id = _insert_plan_run(
+                conn,
+                plan_id=plan_id,
+                status="failed",
+                planner_model="",
+                error=f"assemble_failed: {exc}",
+            )
+            row = _get_run(conn, run_id)
+            return _run_row_to_out(row)
+
+        messages = assembled["model_request"]["messages"]
+        system_prompt = messages[0]["content"]
+        user_prompt = ""
+        input_ref_ids = [r["refImageId"] for r in assembled["ref_order"]]
+        content = messages[1]["content"]
+        if isinstance(content, str):
+            user_prompt = content
+        else:
+            user_prompt = "\n".join(
+                p.get("text", "") for p in content if p.get("type") == "text"
+            )
+        snapshot = _rules_snapshot(assembled["loaded_rules"])
+
+        try:
+            cfg = load_config()
+            planner_model = cfg["model"]
+            raw = run_planner(messages, config=cfg)
+            parsed = parse_plan_output(raw)
+        except PlannerError as exc:
+            run_id = _insert_plan_run(
+                conn,
+                plan_id=plan_id,
+                status="failed",
+                planner_model="",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                input_ref_ids=input_ref_ids,
+                rules_snapshot=snapshot,
+                raw_output=exc.raw_output,
+                error=str(exc),
+            )
+            row = _get_run(conn, run_id)
+            return _run_row_to_out(row)
+
+        run_id = _insert_plan_run(
+            conn,
+            plan_id=plan_id,
+            status="success",
+            planner_model=planner_model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            input_ref_ids=input_ref_ids,
+            rules_snapshot=snapshot,
+            raw_output=raw,
+            design_notes=parsed["designNotes"],
+            open_questions=parsed["openQuestions"],
+            generated_prompt=parsed["prompt"],
+            ref_usage_notes=parsed["refUsageNotes"],
+        )
+        row = _get_run(conn, run_id)
+        return _run_row_to_out(row)
+
+
+@router.post("/plans/{plan_id}/adopt", response_model=ImagePlanOut)
+def adopt_plan_run(body: AdoptRunRequest, plan_id: str = PathParam()) -> ImagePlanOut:
+    with connect() as conn:
+        plan = conn.execute(
+            "SELECT * FROM image_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not plan:
+            raise HTTPException(404, "plan not found")
+        if plan["status"] != "draft":
+            raise HTTPException(409, "only draft plans can adopt")
+        run = _get_run(conn, body.runId)
+        if not run or run["plan_id"] != plan_id:
+            raise HTTPException(404, "run not found for plan")
+        if run["status"] != "success":
+            raise HTTPException(422, "only successful runs can be adopted")
+        if not (run["generated_prompt"] or "").strip():
+            raise HTTPException(422, "run has no generated prompt")
+
+        ts = now_iso()
+        conn.execute(
+            """
+            UPDATE image_plans
+            SET prompt = ?, design_notes = ?, open_questions = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                run["generated_prompt"],
+                run["design_notes"] or "",
+                run["open_questions"] or "[]",
+                ts,
+                plan_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE plan_runs SET adopted_at = ? WHERE id = ?", (ts, body.runId)
         )
         row = conn.execute(
             "SELECT * FROM image_plans WHERE id = ?", (plan_id,)

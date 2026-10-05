@@ -219,13 +219,10 @@ function PlanEditor({
     setSaveError('')
     setRunning(true)
     try {
-      let pid = currentPlanId
-      if (!pid) {
-        const saved = await saveDraft()
-        pid = saved.id
-        setCurrentPlanId(saved.id)
-      }
-      const run = await api.skillRunPlan(pid)
+      // 先保存草稿，保证本次运行包含未保存的角色/顺序修改
+      const saved = await saveDraft()
+      setCurrentPlanId(saved.id)
+      const run = await api.skillRunPlan(saved.id)
       setRunResult(run)
       if (run.status === 'failed') {
         setSaveError(run.error || 'AI 生成失败，草稿未改动')
@@ -246,6 +243,7 @@ function PlanEditor({
       setPrompt(saved.prompt)
       setDesignNotes(saved.designNotes || '')
       setOpenQuestions(saved.openQuestions || [])
+      setRunResult((prev) => (prev ? { ...prev, adoptedAt: new Date().toISOString() } : prev))
       setNotice('已采纳到草稿，可继续手工修改后再确认。')
     } catch (e) {
       setSaveError(e.message || '采纳失败')
@@ -572,36 +570,45 @@ function PlanEditor({
               </p>
             )}
 
-            {(openQuestions?.length > 0 || (runResult?.openQuestions?.length > 0 && !designNotes)) && (
-              <div className="mb-2 rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--warning)_25%,transparent)] bg-[var(--warning-soft)] p-2.5">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="mt-0.5 w-3.5 h-3.5 shrink-0 text-[var(--warning)]" />
-                  <div className="flex-1">
-                    <p className="m-0 text-[11.5px] font-semibold text-[var(--warning)]">
-                      待确认问题（不阻断采纳）
-                    </p>
-                    <ul className="m-0 mt-1 list-disc pl-4 text-[11.5px] text-[var(--warning)]">
-                      {(openQuestions?.length ? openQuestions : runResult?.openQuestions || []).map(
-                        (q, i) => (
-                          <li key={i}>{q}</li>
-                        ),
-                      )}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            )}
+            {(() => {
+              const questions =
+                runResult?.openQuestions?.length > 0
+                  ? runResult.openQuestions
+                  : openQuestions || []
+              const notes = runResult?.designNotes || designNotes
+              return (
+                <>
+                  {questions.length > 0 && (
+                    <div className="mb-2 rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--warning)_25%,transparent)] bg-[var(--warning-soft)] p-2.5">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="mt-0.5 w-3.5 h-3.5 shrink-0 text-[var(--warning)]" />
+                        <div className="flex-1">
+                          <p className="m-0 text-[11.5px] font-semibold text-[var(--warning)]">
+                            待确认问题（不阻断采纳）
+                          </p>
+                          <ul className="m-0 mt-1 list-disc pl-4 text-[11.5px] text-[var(--warning)]">
+                            {questions.map((q, i) => (
+                              <li key={i}>{q}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
-            {(designNotes || runResult?.designNotes) && (
-              <div className="mb-2">
-                <p className="m-0 mb-0.5 text-[11px] font-semibold text-[var(--text-3)]">
-                  设计说明
-                </p>
-                <p className="m-0 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-2)]">
-                  {designNotes || runResult?.designNotes}
-                </p>
-              </div>
-            )}
+                  {notes && (
+                    <div className="mb-2">
+                      <p className="m-0 mb-0.5 text-[11px] font-semibold text-[var(--text-3)]">
+                        设计说明
+                      </p>
+                      <p className="m-0 whitespace-pre-wrap text-[12px] leading-relaxed text-[var(--text-2)]">
+                        {notes}
+                      </p>
+                    </div>
+                  )}
+                </>
+              )
+            })()}
 
             {runResult?.refUsageNotes && (
               <div className="mb-2">

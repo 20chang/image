@@ -153,6 +153,14 @@ def _json_str_list(raw: str | None) -> list[str]:
     return [str(x) for x in data]
 
 
+def _json_list(raw: str | None) -> list:
+    try:
+        data = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _require_plan_ref_ids(conn, product_id: str, ref_image_ids: list[str]) -> None:
     seen: set[str] = set()
     for rid in ref_image_ids:
@@ -893,7 +901,7 @@ def _run_row_to_out(row) -> PlanRunOut:
         systemPrompt=row["system_prompt"] or "",
         userPrompt=row["user_prompt"] or "",
         inputRefIds=_json_str_list(row["input_ref_ids"]),
-        rulesSnapshot=_usage_items(row["rules_snapshot"]),
+        rulesSnapshot=_json_list(row["rules_snapshot"]),
         rawOutput=row["raw_output"],
         designNotes=row["design_notes"],
         openQuestions=_json_str_list(row["open_questions"] or "[]"),
@@ -966,7 +974,7 @@ def list_plan_runs(plan_id: str = PathParam()) -> list[PlanRunOut]:
         if not plan:
             raise HTTPException(404, "plan not found")
         rows = conn.execute(
-            "SELECT * FROM plan_runs WHERE plan_id = ? ORDER BY created_at DESC, id DESC",
+            "SELECT * FROM plan_runs WHERE plan_id = ? ORDER BY created_at DESC, rowid DESC",
             (plan_id,),
         ).fetchall()
         return [_run_row_to_out(r) for r in rows]
@@ -986,14 +994,25 @@ def skill_run(plan_id: str = PathParam()) -> PlanRunOut:
         usage = _usage_items(plan["reference_usage"])
         has_primary = any("primary" in (u.get("roles") or []) for u in usage)
         if (plan["family"] or "main") == "main" and not has_primary:
-            missing = [u.get("refImageId", "") for u in usage if not u.get("roles")]
+            untagged = [u.get("refImageId", "") for u in usage if not u.get("roles")]
+            tagged = [
+                f"{u.get('refImageId', '')}({','.join(u.get('roles') or [])})"
+                for u in usage
+                if u.get("roles")
+            ]
+            detail = "main 族需要 primary 参考图"
+            if untagged:
+                detail += f"；未标角色: {', '.join(untagged)}"
+            if tagged:
+                detail += f"；现有: {', '.join(tagged)}"
+            if not usage:
+                detail += "；未选择任何参考图"
             run_id = _insert_plan_run(
                 conn,
                 plan_id=plan_id,
                 status="failed",
                 planner_model="",
-                error="missing_primary: main 族需要 primary 参考图"
-                + (f"；未标角色: {', '.join(missing)}" if missing else ""),
+                error=f"missing_primary: {detail}",
             )
             row = _get_run(conn, run_id)
             return _run_row_to_out(row)
@@ -1028,6 +1047,22 @@ def skill_run(plan_id: str = PathParam()) -> PlanRunOut:
         try:
             cfg = load_config()
             planner_model = cfg["model"]
+        except PlannerError as exc:
+            run_id = _insert_plan_run(
+                conn,
+                plan_id=plan_id,
+                status="failed",
+                planner_model="",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                input_ref_ids=input_ref_ids,
+                rules_snapshot=snapshot,
+                error=str(exc),
+            )
+            row = _get_run(conn, run_id)
+            return _run_row_to_out(row)
+
+        try:
             raw = run_planner(messages, config=cfg)
             parsed = parse_plan_output(raw)
         except PlannerError as exc:
@@ -1035,7 +1070,7 @@ def skill_run(plan_id: str = PathParam()) -> PlanRunOut:
                 conn,
                 plan_id=plan_id,
                 status="failed",
-                planner_model="",
+                planner_model=planner_model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 input_ref_ids=input_ref_ids,

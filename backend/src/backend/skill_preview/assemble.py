@@ -179,16 +179,21 @@ def assemble_from_case(family: str, case: dict[str, Any]) -> dict[str, Any]:
 
     image_parts: list[dict[str, Any]] = []
     images_missing: list[str] = []
+    local_total = 0
     for row in ref_rows:
-        part = _image_part(row)
+        path = _resolve_local_path(row["url"] or "")
+        if path is not None:
+            local_total += 1
+        try:
+            part = _image_part(row)
+        except SkillPreviewError as exc:
+            images_missing.append(row["refImageId"])
+            raise SkillPreviewError(str(exc)) from exc
         if part is not None:
             image_parts.append(part)
             row["imageStatus"] = "已解析图片（像素已入请求）"
 
-    local_rows = [
-        r for r in ref_rows if _resolve_local_path(r["url"] or "") is not None
-    ]
-    images_resolved = bool(local_rows) and len(image_parts) == len(local_rows)
+    images_resolved = local_total > 0 and len(image_parts) == local_total
 
     # 文字说明与图片输入都按 referenceUsage 顺序（=使用顺序）
     usage_lines = [_usage_line(row) for row in ref_rows]

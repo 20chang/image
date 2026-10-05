@@ -312,6 +312,134 @@ def test_now_iso_has_seconds():
     assert now_iso()[16] == ":"  # HH:MM:SS has second colon at index 16
 
 
+def test_missing_planner_key_raises():
+    import os
+
+    from backend.planner import PlannerConfigError, load_config
+
+    os.environ["PLANNER_MODEL"] = "m"
+    os.environ["PLANNER_BASE_URL"] = "http://x"
+    os.environ.pop("PLANNER_API_KEY", None)
+    with pytest.raises(PlannerConfigError, match="PLANNER_API_KEY"):
+        load_config()
+
+
+def test_assemble_system_prompt_is_deterministic(tmp_path):
+    import json as _json
+
+    from backend.skill_preview import assemble_request
+
+    case = {
+        "family": "main",
+        "product": {"id": "p", "name": "灯", "market": "m", "facts": "f"},
+        "plan": {
+            "id": "pl",
+            "name": "n",
+            "imageUsage": "主图",
+            "drawingRequest": "d",
+            "prompt": "",
+        },
+        "references": [
+            {
+                "id": "ref-A",
+                "url": "/static/fixtures/a.jpg",
+                "desc": "x",
+                "productRelation": "same_product",
+                "aiStatus": "no",
+            }
+        ],
+        "referenceUsage": [
+            {"refImageId": "ref-A", "roles": ["primary"], "useFor": "u", "ignore": ""}
+        ],
+    }
+    path = tmp_path / "c.json"
+    path.write_text(_json.dumps(case, ensure_ascii=False), encoding="utf-8")
+    r1 = assemble_request("main", str(path))
+    r2 = assemble_request("main", str(path))
+    assert (
+        r1["model_request"]["messages"][0]["content"]
+        == r2["model_request"]["messages"][0]["content"]
+    )
+    assert (
+        r1["model_request"]["messages"][0]["content"]
+        == r2["model_request"]["messages"][0]["content"]
+    )
+
+
+def test_same_second_runs_keep_insertion_order(client: TestClient, monkeypatch):
+    def fake_run_planner(messages, *, config=None, timeout=120.0):
+        return '{"designNotes": "d", "prompt": "p", "openQuestions": []}'
+
+    monkeypatch.setattr("backend.routers.run_planner", fake_run_planner)
+    monkeypatch.setattr(
+        "backend.routers.load_config",
+        lambda: {"model": "m", "base_url": "http://x", "api_key": "k"},
+    )
+    monkeypatch.setattr("backend.routers.now_iso", lambda: "2026-10-05 12:00:00")
+
+    product = _create_product(client)
+    _refs, usage = _usage_primary_first(client, product["id"])
+    plan = _create_plan(client, product["id"], referenceUsage=usage).json()
+    ids = []
+    for _ in range(3):
+        run = client.post(f"/api/plans/{plan['id']}/skill-run").json()
+        assert run["status"] == "success"
+        ids.append(run["id"])
+    listed = [r["id"] for r in client.get(f"/api/plans/{plan['id']}/runs").json()]
+    assert listed == list(reversed(ids))
+
+
+def test_confirmed_plan_still_lists_runs(client: TestClient, monkeypatch):
+    def fake_run_planner(messages, *, config=None, timeout=120.0):
+        return '{"designNotes": "d", "prompt": "p", "openQuestions": []}'
+
+    monkeypatch.setattr("backend.routers.run_planner", fake_run_planner)
+    monkeypatch.setattr(
+        "backend.routers.load_config",
+        lambda: {"model": "m", "base_url": "http://x", "api_key": "k"},
+    )
+
+    product = _create_product(client)
+    _refs, usage = _usage_primary_first(client, product["id"])
+    plan = _create_plan(client, product["id"], referenceUsage=usage).json()
+    run = client.post(f"/api/plans/{plan['id']}/skill-run").json()
+    assert run["status"] == "success"
+    assert client.post(f"/api/plans/{plan['id']}/confirm").status_code == 200
+    runs = client.get(f"/api/plans/{plan['id']}/runs").json()
+    assert [r["id"] for r in runs] == [run["id"]]
+
+
+def test_copy_plan_keeps_design_notes(client: TestClient):
+    product = _create_product(client)
+    _refs, usage = _usage_primary_first(client, product["id"])
+    src = _create_plan(
+        client,
+        product["id"],
+        referenceUsage=usage,
+        designNotes="依据 facts",
+        openQuestions=["q1"],
+    ).json()
+    assert client.post(f"/api/plans/{src['id']}/confirm").status_code == 200
+    copied = client.post(
+        f"/api/products/{product['id']}/plans",
+        json={
+            "name": "副本",
+            "family": src["family"],
+            "basedOnPlanId": src["id"],
+            "referenceUsage": usage,
+            "designNotes": src["designNotes"],
+            "openQuestions": src["openQuestions"],
+            "prompt": src["prompt"],
+        },
+    )
+    assert copied.status_code == 201
+    body = copied.json()
+    assert body["basedOnPlanId"] == src["id"]
+    assert body["status"] == "draft"
+    assert body["designNotes"] == "依据 facts"
+    assert body["openQuestions"] == ["q1"]
+
+
 def test_run_snapshot_survives_rule_change(client: TestClient, monkeypatch):
     import hashlib
 
